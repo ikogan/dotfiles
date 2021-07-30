@@ -31,4 +31,4 @@ ln -svf "${SCRIPTPATH}/oh-my-zsh" "${HOME}/.oh-my-zsh/custom"
 echo "Installing all NeoBundles..."
 "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall"
 
-popd || exit &>/dev/null
+popd &>/dev/null || exit &>/dev/null
