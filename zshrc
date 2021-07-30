@@ -100,7 +100,11 @@ COMPLETION_WAITING_DOTS="true"
 # Custom plugins may be added to $ZSH_CUSTOM/plugins/
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
-plugins=(k genpass gitfast kubetail colored-man-pages colorize docker helm thefuck ubuntu vagrant zsh-syntax-highlighting zsh-autosuggestions)
+plugins=(k genpass gitfast kubetail colored-man-pages colorize docker helm ubuntu vagrant zsh-syntax-highlighting zsh-autosuggestions)
+
+if [[ ! -z "$(which thefuck)" ]]; then
+	plugins+=(thefuck)
+fi
 
 source $ZSH/oh-my-zsh.sh
 
