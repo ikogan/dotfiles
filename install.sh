@@ -6,7 +6,7 @@ pushd "${SCRIPTPATH}" || exit &>/dev/null
 git submodule update --recursive --remote --init
 
 echo "Installing Oh-My-ZSH..."
-sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 
 if [[ -d "${HOME}/.vim" ]]; then
     echo "  Cleaning up existing vim configuration..."
