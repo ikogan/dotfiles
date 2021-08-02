@@ -20,7 +20,7 @@ echo "Linking files..."
 ln -svf "${SCRIPTPATH}/zshrc" ~/.zshrc
 ln -svf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
 ln -svf "${SCRIPTPATH}/vim/vimrc.local" ~/.vimrc.local
-ln -svf "${SCRIPTPATH}/vim/vimrc.local.bundles" ~/vimrc.local.bundles
+ln -svf "${SCRIPTPATH}/vim/vimrc.local.bundles" ~/.vimrc.local.bundles
 
 if [[ -d "${HOME}/.oh-my-zsh/custom" && ! -L "${HOME}/.oh-my-zsh/custom" ]]; then
     rm -Rf "${HOME}/.oh-my-zsh/custom"

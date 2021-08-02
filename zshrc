@@ -212,3 +212,7 @@ if [[ -e "$HOME/.zsh/kubernetes.sh" ]]; then
 fi
 
 alias helm=${HOME}/.vs-kubernetes/tools/helm/linux-amd64/helm
+
+if [[ -f "${HOME}/.tumuxinator/aliases" ]]; then
+	source "${HOME}/.tmuxinator/aliases"
+fi
