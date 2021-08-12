@@ -1,7 +1,7 @@
 #!/bin/bash
 SCRIPTPATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 
-pushd "${SCRIPTPATH}" || exit &>/dev/null
+pushd "${SCRIPTPATH}" &>/dev/null || exit
 
 git submodule update --recursive --remote --init
 
@@ -22,13 +22,15 @@ ln -svf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
 ln -svf "${SCRIPTPATH}/vim/vimrc.local" ~/.vimrc.local
 ln -svf "${SCRIPTPATH}/vim/vimrc.local.bundles" ~/.vimrc.local.bundles
 
-if [[ -d "${HOME}/.oh-my-zsh/custom" && ! -L "${HOME}/.oh-my-zsh/custom" ]]; then
-    rm -Rf "${HOME}/.oh-my-zsh/custom"
-fi
-
-ln -svf "${SCRIPTPATH}/oh-my-zsh" "${HOME}/.oh-my-zsh/custom"
+echo "Linking Oh-My-ZSH Plugins and Themes..."
+for PLUGIN in "${SCRIPTPATH}"/oh-my-zsh/plugins/*; do
+    ln -svf "${PLUGIN}" ~/.oh-my-zsh/custom/plugins/"$(basename "${PLUGIN}")"
+done
+for THEME in "${SCRIPTPATH}"/oh-my-zsh/themes/*; do
+    ln -svf "${THEME}" ~/.oh-my-zsh/custom/themes/"$(basename "${THEME}")"
+done
 
 echo "Installing all NeoBundles..."
 "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall"
 
-popd &>/dev/null || exit &>/dev/null
+popd &>/dev/null || exit
