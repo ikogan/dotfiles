@@ -213,6 +213,10 @@ fi
 
 alias helm=${HOME}/.vs-kubernetes/tools/helm/linux-amd64/helm
 
+if [[ -f "${HOME}/.bin/mcfly" ]]; then
+	eval "$(mcfly init zsh)"
+fi
+
 if [[ -f "${HOME}/.tumuxinator/aliases" ]]; then
 	source "${HOME}/.tmuxinator/aliases"
 fi

@@ -5,6 +5,15 @@ pushd "${SCRIPTPATH}" &>/dev/null || exit
 
 git submodule update --recursive --remote --init
 
+echo "Installing custom binaries..."
+if [[ ! -d "${HOME}/.bin" ]]; then
+    mkdir "${HOME}/.bin"
+fi
+
+for BINARY in "${SCRIPTPATH}"/binaries/*; do
+    ln -svf "${BINARY}" ~/.bin/"$(basename "${BINARY}")"
+done
+
 echo "Installing Oh-My-ZSH..."
 sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 
