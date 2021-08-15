@@ -217,6 +217,6 @@ if [[ -f "${HOME}/.bin/mcfly" ]]; then
 	eval "$(mcfly init zsh)"
 fi
 
-if [[ -f "${HOME}/.tumuxinator/aliases" ]]; then
+if [[ -f "${HOME}/.tumxinator/aliases" ]]; then
 	source "${HOME}/.tmuxinator/aliases"
 fi
