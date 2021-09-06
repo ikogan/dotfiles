@@ -225,4 +225,5 @@ if [[ -f "${HOME}/.bin/mcfly" ]]; then
 	eval "$("${HOME}"/.bin/mcfly init zsh)"
 fi
 
+alias git-fuck="git add . && git commit --amend --no-edit -a && git push --force"
 
