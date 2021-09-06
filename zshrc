@@ -102,7 +102,7 @@ COMPLETION_WAITING_DOTS="true"
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(k genpass gitfast kubetail colored-man-pages colorize docker helm ubuntu vagrant zsh-syntax-highlighting zsh-autosuggestions)
 
-if [[ ! -z "$(which thefuck)" ]]; then
+if [[ ! -z "$(which thefuck 2>/dev/null)" ]]; then
 	plugins+=(thefuck)
 fi
 
@@ -213,10 +213,12 @@ fi
 
 alias helm=${HOME}/.vs-kubernetes/tools/helm/linux-amd64/helm
 
-if [[ -f "${HOME}/.bin/mcfly" ]]; then
-	eval "$(mcfly init zsh)"
+if [[ -f "${HOME}/.tmuxinator/aliases" ]]; then
+    source "${HOME}/.tmuxinator/aliases"
 fi
 
-if [[ -f "${HOME}/.tumxinator/aliases" ]]; then
-	source "${HOME}/.tmuxinator/aliases"
+if [[ -f "${HOME}/.bin/mcfly" ]]; then
+	eval "$("${HOME}"/.bin/mcfly init zsh)"
 fi
+
+
