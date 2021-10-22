@@ -166,8 +166,10 @@ export EDITOR='vim'
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
-if [ $TILIX_ID ] || [ $VTE_VERSION ]; then
-    source /etc/profile.d/vte.sh
+if [[ -f /etc/profile.d/vte.sh ]]; then
+	if [ $TILIX_ID ] || [ $VTE_VERSION ]; then
+		source /etc/profile.d/vte.sh
+	fi
 fi
 
 export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$HOME/go/bin:/usr/local/bin:$HOME/.bin:$HOME/.cache/cloud-code/installer/google-cloud-sdk/bin:/usr/local/bin:${PATH}"
