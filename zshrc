@@ -213,6 +213,8 @@ if [[ -d "$HOME/Applications/Android/SDK" ]]; then
 	export PATH=$PATH:$ANDROID_HOME/platform-tools
 fi
 
+alias git-fuck="git add . && git commit --amend --no-edit -a && git push --force"
+
 if [[ -e "$HOME/.zsh/kubernetes.sh" ]]; then
 	source "$HOME/.zsh/kubernetes.sh"
 elif [[ -n "$(which kubectl)" ]]; then
@@ -228,9 +230,16 @@ if [[ -f "${HOME}/.tmuxinator/aliases" ]]; then
     source "${HOME}/.tmuxinator/aliases"
 fi
 
+if ! [[ -z "$(which clockify-cli)" ]]; then
+    source <(clockify-cli completion zsh)
+    alias clock=$(clockify-cli)
+fi
+
 if [[ -f "${HOME}/.bin/mcfly" ]]; then
 	eval "$("${HOME}"/.bin/mcfly init zsh)"
 fi
 
-alias git-fuck="git add . && git commit --amend --no-edit -a && git push --force"
+export KUBERNETES_DIAGNOSTIC_IMAGE=_/_/docker-diagnostics:2021-09-30
+export KUBERNETES_DIAGNOSTIC_SECRET=_
 
+alias kwtf="kubectl run diag --delete --image=${KUBERNETES_DIAGNOSTIC_IMAGE} --command -t --overrides='{\"spec\":{\"imagePullSecrets\":[{\"name\":\"${KUBERNETES_DIAGNOSTIC_SECRET}\"}]}}' -i --attach --rm"
