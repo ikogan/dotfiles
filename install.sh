@@ -23,7 +23,7 @@ if [[ -d "${HOME}/.vim" ]]; then
 fi
 
 echo "Installing NeoBundle..."
-sh -c "$(curl https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)"
+sh -c "$(curl https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended
 
 echo "Linking files..."
 ln -svf "${SCRIPTPATH}/zshrc" ~/.zshrc

@@ -215,6 +215,11 @@ fi
 
 if [[ -e "$HOME/.zsh/kubernetes.sh" ]]; then
 	source "$HOME/.zsh/kubernetes.sh"
+elif [[ -n "$(which kubectl)" ]]; then
+	echo "Generating kubectl completions..."
+	mkdir "$HOME/.zsh" || true
+	kubectl completion zsh > "$HOME/.zsh/kubernetes.sh"
+	source "$HOME/.zsh/kubernetes.sh"
 fi
 
 alias helm=${HOME}/.vs-kubernetes/tools/helm/linux-amd64/helm
