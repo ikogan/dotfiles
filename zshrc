@@ -176,11 +176,11 @@ export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$HOME/go/bin:/usr/local/bin:$HOME/.bi
 
 RICH_TERMINALS="iTerm.app Terminal-Plus Babun gnome gnome-wayland powerline-compat gnome-terminal chrome code deepin-terminal"
 
-if [[ ! -z "$(which vim)" ]]; then
+if [[ ! -z "$(which vim 2>/dev/null)" ]]; then
     export EDITOR=vim
-elif [[ ! -z "$(which nano)" ]]; then
+elif [[ ! -z "$(which nano 2>/dev/null)" ]]; then
     export EDITOR=nano
-elif [[ ! -z "$(which pico)" ]]; then
+elif [[ ! -z "$(which pico 2>/dev/null)" ]]; then
     export EDITOR=pico
 else
     echo Warning: Could not find an editor. Have fun. 1>&2
@@ -217,7 +217,7 @@ alias git-fuck="git add . && git commit --amend --no-edit -a && git push --force
 
 if [[ -e "$HOME/.zsh/kubernetes.sh" ]]; then
 	source "$HOME/.zsh/kubernetes.sh"
-elif [[ -n "$(which kubectl)" ]]; then
+elif [[ -n "$(which kubectl 2>/dev/null)" ]]; then
 	echo "Generating kubectl completions..."
 	mkdir "$HOME/.zsh" || true
 	kubectl completion zsh > "$HOME/.zsh/kubernetes.sh"
@@ -230,7 +230,7 @@ if [[ -f "${HOME}/.tmuxinator/aliases" ]]; then
     source "${HOME}/.tmuxinator/aliases"
 fi
 
-if ! [[ -z "$(which clockify-cli)" ]]; then
+if ! [[ -z "$(which clockify-cli 2>/dev/null)" ]]; then
     source <(clockify-cli completion zsh)
     alias clock=$(clockify-cli)
 fi
