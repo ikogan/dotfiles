@@ -3,7 +3,7 @@
 export ZSH_2000_DISABLE_RVM='true'
 
 # Path to your oh-my-zsh installation.
-export ZSH="/home/kogan/.oh-my-zsh"
+export ZSH="${HOME}/.oh-my-zsh"
 
 # Set name of the theme to load --- if set to "random", it will
 # load a random theme each time oh-my-zsh is loaded, in which case,
@@ -102,7 +102,7 @@ COMPLETION_WAITING_DOTS="true"
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(k genpass gitfast kubetail colored-man-pages colorize docker helm ubuntu vagrant zsh-syntax-highlighting zsh-autosuggestions)
 
-if [[ ! -z "$(which thefuck 2>/dev/null)" ]]; then
+if which thefuck &>/dev/null; then
 	plugins+=(thefuck)
 fi
 
@@ -194,8 +194,10 @@ fi
 
 export PATH="${NPM_PACKAGES}/bin:${PATH}"
 
-unset MANPATH
-export MANPATH="${NPM_PACKAGES}/share/man:$(manpath)"
+if which manpath &>/dev/null; then
+    unset MANPATH
+    export MANPATH="${NPM_PACKAGES}/share/man:$(manpath)"
+fi
 
 __SALT_GIT_ROOT_LOCATIONS=("${HOME}/Documents/Code/salt" "${HOME}/Documents/Code/_-salt")
 
@@ -230,7 +232,7 @@ if [[ -f "${HOME}/.tmuxinator/aliases" ]]; then
     source "${HOME}/.tmuxinator/aliases"
 fi
 
-if ! [[ -z "$(which clockify-cli 2>/dev/null)" ]]; then
+if which clockify-cli &>/dev/null; then
     source <(clockify-cli completion zsh)
     alias clock=$(clockify-cli)
 fi
@@ -243,3 +245,8 @@ export KUBERNETES_DIAGNOSTIC_IMAGE=_/_/docker-diagnostics:2021-09-30
 export KUBERNETES_DIAGNOSTIC_SECRET=_
 
 alias kwtf="kubectl run diag --delete --image=${KUBERNETES_DIAGNOSTIC_IMAGE} --command -t --overrides='{\"spec\":{\"imagePullSecrets\":[{\"name\":\"${KUBERNETES_DIAGNOSTIC_SECRET}\"}]}}' -i --attach --rm"
+
+if [[ -e "${HOME}/.zsh-aliases" ]]; then
+    . "${HOME}/.zsh-aliases"
+fi
+
