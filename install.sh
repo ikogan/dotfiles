@@ -30,6 +30,7 @@ fi
 echo "Linking files..."
 touch "${HOME}/.zsh_history"
 ln -svf "${SCRIPTPATH}/zshrc" ~/.zshrc
+ln -svf "${SCRIPTPATH}/p10k.zsh" ~/.p10k.zsh
 
 if which vim &>/dev/null; then
     ln -svf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
