@@ -16,6 +16,7 @@ Don't forget to setup `~/.dotfilesrc` with anything that might
 change between hosts, like:
 
 ```bash
-export KUBERNETES_DIAGNOSTIC_IMAGE=
-export KUBERNETES_DIAGNOSTIC_SECRET=
+KUBERNETES_DIAGNOSTIC_IMAGE=
+KUBERNETES_DIAGNOSTIC_SECRET=
+SALT_GIT_ROOT_LOCATIONS=("${HOME}/Documents/Code/salt" "${HOME}/Documents/Code/some-other-place")
 ```
