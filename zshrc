@@ -106,6 +106,10 @@ if [[ ! -z "$(which thefuck 2>/dev/null)" ]]; then
 	plugins+=(thefuck)
 fi
 
+setopt histfcntllock
+
+zstyle :omz:plugins:ssh-agent agent-forwarding on
+
 source $ZSH/oh-my-zsh.sh
 
 ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets pattern cursor)

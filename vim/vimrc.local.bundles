@@ -5,7 +5,6 @@ NeoBundle 'wincent/command-t', {
     \   }
     \ }
 NeoBundle 'saltstack/salt-vim'
-NeoBundle 'Xuyuanp/nerdtree-git-plugin.git'
 NeoBundle 'benmills/vimux'
 NeoBundle 'luochen1990/rainbow'
 
