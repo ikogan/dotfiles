@@ -2,6 +2,10 @@ if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 
+if [[ -f "${HOME}/.dotfilesrc" ]]; then
+	source "${HOME}/.dotfilesrc"
+fi
+
 export ZSH_2000_DISABLE_RVM='true'
 export ZSH="${HOME}/.oh-my-zsh"
 
@@ -89,13 +93,13 @@ if which manpath &>/dev/null; then
     export MANPATH="${NPM_PACKAGES}/share/man:$(manpath)"
 fi
 
-__SALT_GIT_ROOT_LOCATIONS=("${HOME}/Documents/Code/salt" "${HOME}/Documents/Code/_-salt")
-
-for ROOT in ${__SALT_GIT_ROOT_LOCATIONS}; do
-    if [[ -f "${ROOT}/bootstrap/bashrc.sh" ]]; then
-        source "${ROOT}/bootstrap/bashrc.sh"
-    fi
-done
+if [[ -n "${SALT_GIT_ROOT_LOCATIONS}" ]]; then
+	for ROOT in ${SALT_GIT_ROOT_LOCATIONS}; do
+		if [[ -f "${ROOT}/bootstrap/bashrc.sh" ]]; then
+			source "${ROOT}/bootstrap/bashrc.sh"
+		fi
+	done
+fi
 
 if [[ -d "$HOME/Applications/Android/SDK" ]]; then
 	export ANDROID_HOME=$HOME/Applications/Android/SDK
@@ -131,10 +135,9 @@ if [[ -f "${HOME}/.bin/mcfly" ]]; then
 	eval "$("${HOME}"/.bin/mcfly init zsh)"
 fi
 
-export KUBERNETES_DIAGNOSTIC_IMAGE=_/library/docker-diagnostics:2021-01-15
-export KUBERNETES_DIAGNOSTIC_SECRET=_
-
-alias kwtf="kubectl run diag --delete --image=${KUBERNETES_DIAGNOSTIC_IMAGE} --command -t --overrides='{\"spec\":{\"imagePullSecrets\":[{\"name\":\"${KUBERNETES_DIAGNOSTIC_SECRET}\"}]}}' -i --attach --rm"
+if [[ -n "${KUBERNETES_DIAGNOSTIC_IMAGE}" ]] && [[ -n "${KUBERNETES_DIAGNOSTIC_SECRET}" ]]; then
+	alias kwtf="kubectl run diag --delete --image=${KUBERNETES_DIAGNOSTIC_IMAGE} --command -t --overrides='{\"spec\":{\"imagePullSecrets\":[{\"name\":\"${KUBERNETES_DIAGNOSTIC_SECRET}\"}]}}' -i --attach --rm"
+fi
 
 if [[ -e "${HOME}/.zsh-aliases" ]]; then
     . "${HOME}/.zsh-aliases"
