@@ -6,6 +6,15 @@ if [[ -f "${HOME}/.dotfilesrc" ]]; then
 	source "${HOME}/.dotfilesrc"
 fi
 
+export LANG="C.UTF-8"
+
+for LOCALE in en_US.UTF-8 C.UTF-8; do
+    if [[ -n "$(locale -a | grep ${LOCALE})" ]]; then
+        export LANG=${LOCALE}
+        break
+    fi
+done
+
 export ZSH_2000_DISABLE_RVM='true'
 export ZSH="${HOME}/.oh-my-zsh"
 
