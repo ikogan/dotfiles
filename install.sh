@@ -14,6 +14,13 @@ for BINARY in "${SCRIPTPATH}"/binaries/*; do
     ln -svf "${BINARY}" ~/.bin/"$(basename "${BINARY}")"
 done
 
+echo "Linking dotfiles..."
+for EACH in "${SCRIPTPATH}/dotfiles/*"; do
+    if [[ -f "${EACH}" ]]; then
+        ln -svf "${EACH}" ~/".$(basename "${EACH}")"
+    fi
+done
+
 echo "Installing Oh-My-ZSH..."
 sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 
