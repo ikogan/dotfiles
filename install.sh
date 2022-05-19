@@ -15,7 +15,7 @@ for BINARY in "${SCRIPTPATH}"/binaries/*; do
 done
 
 echo "Linking dotfiles..."
-for EACH in "${SCRIPTPATH}/dotfiles/*"; do
+for EACH in "${SCRIPTPATH}"/dotfiles/*; do
     if [[ -f "${EACH}" ]]; then
         ln -svf "${EACH}" ~/".$(basename "${EACH}")"
     fi
