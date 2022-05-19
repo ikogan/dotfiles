@@ -75,7 +75,7 @@ if [[ -f /etc/profile.d/vte.sh ]]; then
 	fi
 fi
 
-export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$HOME/go/bin:/usr/local/bin:$HOME/.bin:$HOME/.cache/cloud-code/installer/google-cloud-sdk/bin:/usr/local/bin:${PATH}"
+export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$HOME/go/bin:$HOME/.bin:$HOME/.local/bin:$HOME/.cache/cloud-code/installer/google-cloud-sdk/bin:/usr/local/bin:${PATH}"
 
 RICH_TERMINALS="iTerm.app Terminal-Plus Babun gnome gnome-wayland powerline-compat gnome-terminal chrome code deepin-terminal"
 
@@ -129,7 +129,9 @@ elif [[ -n "$(which kubectl 2>/dev/null)" ]]; then
 	source "$HOME/.zsh/kubernetes.sh"
 fi
 
-alias helm=${HOME}/.vs-kubernetes/tools/helm/linux-amd64/helm
+if [[ -f "{HOME}/.vs-kubernetes/tools/helm/linux-amd64/helm" ]]; then
+    alias helm=${HOME}/.vs-kubernetes/tools/helm/linux-amd64/helm
+fi
 
 if [[ -f "${HOME}/.tmuxinator/aliases" ]]; then
     source "${HOME}/.tmuxinator/aliases"
@@ -153,9 +155,13 @@ if [[ -e "${HOME}/.zsh-aliases" ]]; then
 fi
 
 if which highlight &>/dev/null; then
-	function pretty() {
-		highlight -l -O xterm256 --style=molokai --syntax="$1"
-	}
+    function pretty() {
+        highlight -l -O xterm256 --style=molokai --syntax="$1"
+    }
+fi
+
+if [[ -d "${HOME}/Documents/Code/salt" ]]; then
+    source "${HOME}/Documents/Code/salt/bootstrap/bashrc.sh"
 fi
 
 [[ ! -f ~/.p10k.zsh ]] || source "${HOME}"/.p10k.zsh
