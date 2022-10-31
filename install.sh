@@ -5,14 +5,77 @@ pushd "${SCRIPTPATH}" &>/dev/null || exit
 
 git submodule update --recursive --remote --init
 
+# From https://gist.github.com/lukechilds/a83e1d7127b78fef38c2914c4ececc3c
+get_latest_release() {
+  curl --silent "https://api.github.com/repos/$1/releases/latest" | # Get latest release from GitHub api
+    grep '"tag_name":' |                                            # Get tag line
+    sed -E 's/.*"([^"]+)".*/\1/'                                    # Pluck JSON value
+}
+
+OS_KERNEL="$(uname -s)"
+CPU_ARCHITECTURE="$(uname -m)"
+CPU_ARCHITECTURE_LEGACY=""
+case ${CPU_ARCHITECTURE} in
+    i386 | i686)   CPU_ARCHITECTURE_LEGACY="386" ;;
+    x86_64)        CPU_ARCHITECTURE_LEGACY="amd64" ;;
+    *) CPU_ARCHITECTURE_LEGACY=${CPU_ARCHITECTURE} ;;
+esac
+
+if [[ -z "$(which kubectl 2>/dev/null)" ]]; then
+    echo "Kubectl is necessary for some of this script, please install it first." 1>&2
+    exit 1
+fi
+
+TEMP_DIR=$(mktemp -d /tmp/dotfiles.XXXXX) || exit 1
+
+if [[ ! -d "${TEMP_DIR}" ]]; then
+    echo "Error: Could not create temporary directory." 1>&2
+    exit 1
+fi
+
+if [[ ! "${TEMP_DIR}" = /tmp/dotfiles.* ]]; then
+    echo "Error: Temproary directory is weird: ${TEMP_DIR}." 1>&2
+    exit 1
+fi
+
+trap 'rm -Rf "${TEMP_DIR:?}"' EXIT
+
 echo "Installing custom binaries..."
 if [[ ! -d "${HOME}/.bin" ]]; then
     mkdir "${HOME}/.bin"
 fi
 
-for BINARY in "${SCRIPTPATH}"/binaries/*; do
-    ln -svf "${BINARY}" ~/.bin/"$(basename "${BINARY}")"
-done
+echo "Installing McFly..."
+PACKAGE_VERSION=$(get_latest_release cantino/mcfly)
+curl -o "${TEMP_DIR}/package.tar.gz" -L https://github.com/cantino/mcfly/releases/download/"${PACKAGE_VERSION}"/mcfly-"${PACKAGE_VERSION}"-"${CPU_ARCHITECTURE}"-unknown-"${OS_KERNEL}"-musl.tar.gz
+tar -C "${TEMP_DIR}" -zxvf "${TEMP_DIR}/package.tar.gz"
+install "${TEMP_DIR}"/mcfly "${HOME}/.bin"
+rm -Rf "${TEMP_DIR:?}/*"
+
+echo "Installing Kubecolor..."
+PACKAGE_VERSION=$(get_latest_release hidetatz/kubecolor)
+curl -o "${TEMP_DIR}/package.tar.gz" -L https://github.com/hidetatz/kubecolor/releases/download/"${PACKAGE_VERSION}"/kubecolor_"$(echo "${PACKAGE_VERSION}" | sed -r "s/v([0-9\.]+)/\1/")"_"${OS_KERNEL}"_"${CPU_ARCHITECTURE}".tar.gz
+tar -C "${TEMP_DIR}" -zxvf "${TEMP_DIR}/package.tar.gz"
+install "${TEMP_DIR}"/kubecolor "${HOME}/.bin"
+rm -Rf "${TEMP_DIR:?}/*"
+
+echo "Installing k9s..."
+PACKAGE_VERSION=$(get_latest_release derailed/k9s)
+curl -o "${TEMP_DIR}/package.tar.gz" -L https://github.com/derailed/k9s/releases/download/"${PACKAGE_VERSION}"/k9s_"${OS_KERNEL}"_"${CPU_ARCHITECTURE}".tar.gz
+tar -C "${TEMP_DIR}" -zxvf "${TEMP_DIR}/package.tar.gz"
+install "${TEMP_DIR}"/k9s "${HOME}/.bin"
+rm -Rf "${TEMP_DIR:?}/*"
+
+echo "Installing Krew..."
+PACKAGE_VERSION=$(get_latest_release kubernetes-sigs/krew)
+curl -o "${TEMP_DIR}/package.tar.gz" -L https://github.com/kubernetes-sigs/krew/releases/download/"${PACKAGE_VERSION}"/krew-"${OS_KERNEL}"_"${CPU_ARCHITECTURE_LEGACY}".tar.gz
+tar -C "${TEMP_DIR}" -zxvf "${TEMP_DIR}/package.tar.gz"
+chmod +x "${TEMP_DIR}"/krew-*
+# shellcheck disable=SC2211
+"${TEMP_DIR}"/krew-* install krew
+
+echo "Installing Krew plugins..."
+kubectl krew install neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff
 
 echo "Linking dotfiles..."
 for EACH in "${SCRIPTPATH}"/dotfiles/*; do
