@@ -147,7 +147,7 @@ if [[ -f "${HOME}/.bin/mcfly" ]]; then
 fi
 
 if [[ -n "${KUBERNETES_DIAGNOSTIC_IMAGE}" ]] && [[ -n "${KUBERNETES_DIAGNOSTIC_SECRET}" ]]; then
-	alias kwtf="kubectl run diag --delete --image=${KUBERNETES_DIAGNOSTIC_IMAGE} --command -t --overrides='{\"spec\":{\"imagePullSecrets\":[{\"name\":\"${KUBERNETES_DIAGNOSTIC_SECRET}\"}]}}' -i --attach --rm"
+	alias kwtf="kubectl run diag --restart=Never --image=${KUBERNETES_DIAGNOSTIC_IMAGE} --command -t --overrides='{\"spec\":{\"imagePullSecrets\":[{\"name\":\"${KUBERNETES_DIAGNOSTIC_SECRET}\"}]}}' -i --attach --rm"
 fi
 
 if [[ -e "${HOME}/.zsh-aliases" ]]; then
