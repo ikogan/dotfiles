@@ -22,8 +22,12 @@ case ${CPU_ARCHITECTURE} in
 esac
 
 if [[ -z "$(which kubectl 2>/dev/null)" ]]; then
-    echo "Kubectl is necessary for some of this script, please install it first." 1>&2
-    exit 1
+    if [[ -e "${HOME}/.local/state/vs-kubernetes/tools/kubectl/kubectl" ]]; then
+        export PATH=$PATH:"${HOME}/.local/state/vs-kubernetes/tools/kubectl"
+    else
+        echo "Kubectl is necessary for some of this script, please install it first." 1>&2
+        exit 1
+    fi
 fi
 
 TEMP_DIR=$(mktemp -d /tmp/dotfiles.XXXXX) || exit 1
