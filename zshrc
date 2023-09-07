@@ -159,7 +159,11 @@ if [[ -f "${HOME}/.bin/mcfly" ]]; then
 fi
 
 if [[ -n "${KUBERNETES_DIAGNOSTIC_IMAGE}" ]] && [[ -n "${KUBERNETES_DIAGNOSTIC_SECRET}" ]]; then
-	alias kwtf="kubectl run diag --restart=Never --image=${KUBERNETES_DIAGNOSTIC_IMAGE} --command -t --overrides='{\"spec\":{\"imagePullSecrets\":[{\"name\":\"${KUBERNETES_DIAGNOSTIC_SECRET}\"}]}}' -i --attach --rm"
+    if [[ -z "${KUBERNETES_DIAGNOSTIC_SECRET}" ]] || [[ -z "${KUBERNETES_DIAGNOSTIC_NAMESPACE}" ]]; then
+        echo "Warning: KUBERNETES_DIAGNOSTIC_IMAGE is set but either KUBERNETES_DIAGNOSTIC_SECRET or KUBERNETES_DIAGNOSTIC_NAMESPACE are not." 1>&2
+    else
+    	alias kwtf="kubectl run -n "${KUBERNETES_DIAGNOSTIC_NAMESPACE}" diag --restart=Never --image=${KUBERNETES_DIAGNOSTIC_IMAGE} --command -t --overrides='{\"spec\":{\"imagePullSecrets\":[{\"name\":\"${KUBERNETES_DIAGNOSTIC_SECRET}\"}]}}' -i --attach --rm"
+    fi
 fi
 
 if [[ -e "${HOME}/.zsh-aliases" ]]; then
