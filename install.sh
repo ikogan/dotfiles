@@ -18,8 +18,19 @@ CPU_ARCHITECTURE_LEGACY=""
 case ${CPU_ARCHITECTURE} in
     i386 | i686)   CPU_ARCHITECTURE_LEGACY="386" ;;
     x86_64)        CPU_ARCHITECTURE_LEGACY="amd64" ;;
+    aarch64)       CPU_ARCHITECTURE_LEGACY="arm64" ;;
     *) CPU_ARCHITECTURE_LEGACY=${CPU_ARCHITECTURE} ;;
 esac
+
+if ! which which &>/dev/null; then
+    echo "The 'which' command is missing. Please install it first." 1>&2
+    exit 1
+fi
+
+if [[ -z "$(which tmux 2>/dev/null)" ]]; then
+    echo "Tmux is needed for some things, please install it." 1>&2
+    exit 1
+fi
 
 if [[ -z "$(which kubectl 2>/dev/null)" ]]; then
     if [[ -e "${HOME}/.local/state/vs-kubernetes/tools/kubectl/kubectl" ]]; then
@@ -30,15 +41,20 @@ if [[ -z "$(which kubectl 2>/dev/null)" ]]; then
     fi
 fi
 
-TEMP_DIR=$(mktemp -d /tmp/dotfiles.XXXXX) || exit 1
+if [[ "$(uname -o)" = "Android" ]]; then
+  test -d "${HOME}/.tmp" || mkdir "${HOME}/.tmp"
+  TEMP_DIR=$(mktemp -d "${HOME}/.tmp/dotfiles.XXXXX") || exit 1
+else
+  TEMP_DIR=$(mktemp -d /tmp/dotfiles.XXXXX) || exit 1
+fi
 
 if [[ ! -d "${TEMP_DIR}" ]]; then
     echo "Error: Could not create temporary directory." 1>&2
     exit 1
 fi
 
-if [[ ! "${TEMP_DIR}" = /tmp/dotfiles.* ]]; then
-    echo "Error: Temproary directory is weird: ${TEMP_DIR}." 1>&2
+if [[ ! "${TEMP_DIR}" = /tmp/dotfiles.* ]] && [[ ! "${TEMP_DIR}" = "${HOME}"/.tmp/dotfiles.* ]]; then
+    echo "Error: Temporary directory is weird: ${TEMP_DIR}." 1>&2
     exit 1
 fi
 
@@ -56,30 +72,20 @@ tar -C "${TEMP_DIR}" -zxvf "${TEMP_DIR}/package.tar.gz"
 install "${TEMP_DIR}"/mcfly "${HOME}/.bin"
 rm -Rf "${TEMP_DIR:?}/*"
 
-echo "Installing Kubecolor..."
-PACKAGE_VERSION=$(get_latest_release hidetatz/kubecolor)
-curl -o "${TEMP_DIR}/package.tar.gz" -L https://github.com/hidetatz/kubecolor/releases/download/"${PACKAGE_VERSION}"/kubecolor_"$(echo "${PACKAGE_VERSION}" | sed -r "s/v([0-9\.]+)/\1/")"_"${OS_KERNEL}"_"${CPU_ARCHITECTURE}".tar.gz
-tar -C "${TEMP_DIR}" -zxvf "${TEMP_DIR}/package.tar.gz"
-install "${TEMP_DIR}"/kubecolor "${HOME}/.bin"
-rm -Rf "${TEMP_DIR:?}/*"
+if [[ "$(uname -o)" = "Android" ]]; then
+    echo "Krew seems to blow up on Android, skipping."
+else
+    echo "Installing Krew..."
+    PACKAGE_VERSION=$(get_latest_release kubernetes-sigs/krew)
+    curl -o "${TEMP_DIR}/package.tar.gz" -L https://github.com/kubernetes-sigs/krew/releases/download/"${PACKAGE_VERSION}"/krew-"${OS_KERNEL}"_"${CPU_ARCHITECTURE_LEGACY}".tar.gz
+    tar -C "${TEMP_DIR}" -zxvf "${TEMP_DIR}/package.tar.gz"
+    chmod +x "${TEMP_DIR}"/krew-*
+    # shellcheck disable=SC2211
+    "${TEMP_DIR}"/krew-* install krew
 
-echo "Installing k9s..."
-PACKAGE_VERSION=$(get_latest_release derailed/k9s)
-curl -o "${TEMP_DIR}/package.tar.gz" -L https://github.com/derailed/k9s/releases/download/"${PACKAGE_VERSION}"/k9s_"${OS_KERNEL}"_"${CPU_ARCHITECTURE}".tar.gz
-tar -C "${TEMP_DIR}" -zxvf "${TEMP_DIR}/package.tar.gz"
-install "${TEMP_DIR}"/k9s "${HOME}/.bin"
-rm -Rf "${TEMP_DIR:?}/*"
-
-echo "Installing Krew..."
-PACKAGE_VERSION=$(get_latest_release kubernetes-sigs/krew)
-curl -o "${TEMP_DIR}/package.tar.gz" -L https://github.com/kubernetes-sigs/krew/releases/download/"${PACKAGE_VERSION}"/krew-"${OS_KERNEL}"_"${CPU_ARCHITECTURE_LEGACY}".tar.gz
-tar -C "${TEMP_DIR}" -zxvf "${TEMP_DIR}/package.tar.gz"
-chmod +x "${TEMP_DIR}"/krew-*
-# shellcheck disable=SC2211
-"${TEMP_DIR}"/krew-* install krew
-
-echo "Installing Krew plugins..."
-kubectl krew install neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff
+    echo "Installing Krew plugins..."
+    kubectl krew install neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff
+fi
 
 echo "Linking dotfiles..."
 for EACH in "${SCRIPTPATH}"/dotfiles/*; do
