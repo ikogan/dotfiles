@@ -120,17 +120,19 @@ fi
 
 alias git-fuck="git add . && git commit --amend --no-edit -a && git push --force"
 
-for TOOL in "${HOME}"/.local/state/vs-kubernetes/tools/*; do
-	if [[ -e "${TOOL}/$(basename ${TOOL})" ]]; then
-		export PATH=$PATH:"${TOOL}"
-	elif [[ -e "${TOOL}/"$(ls -1 "${TOOL}")"/$(basename "${TOOL}")" ]]; then
-		export PATH=$PATH:"${TOOL}/"$(ls -1 "${TOOL}")""
-    elif ! [[ -d "${TOOL}" ]]; then
-        continue
-	else
-		echo "Warning: Found Cloud Code tool ${TOOL} but could not find binary." 1>&2
-	fi
-done
+if [[ -d "${HOME}"/.local/state/vs-kubernetes-tools  ]]; then
+    for TOOL in "${HOME}"/.local/state/vs-kubernetes/tools/*; do
+        if [[ -e "${TOOL}/$(basename ${TOOL})" ]]; then
+            export PATH=$PATH:"${TOOL}"
+        elif [[ -e "${TOOL}/"$(ls -1 "${TOOL}")"/$(basename "${TOOL}")" ]]; then
+            export PATH=$PATH:"${TOOL}/"$(ls -1 "${TOOL}")""
+        elif ! [[ -d "${TOOL}" ]]; then
+            continue
+        else
+            echo "Warning: Found Cloud Code tool ${TOOL} but could not find binary." 1>&2
+        fi
+    done
+fi
 
 if [[ -d "${HOME}/.config/Code/User/globalStorage/ms-vscode-remote.remote-containers/cli-bin" ]]; then
 	export PATH=$PATH:"${HOME}/.config/Code/User/globalStorage/ms-vscode-remote.remote-containers/cli-bin"
