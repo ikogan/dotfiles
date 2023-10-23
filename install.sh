@@ -94,6 +94,9 @@ for EACH in "${SCRIPTPATH}"/dotfiles/*; do
     fi
 done
 
+echo "Installing Oh-My-Tmux..."
+ln -s "$(pwd)"/oh-my-tmux/.tmux.conf "${HOME}/.tmux.conf"
+
 echo "Installing Oh-My-ZSH..."
 sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 
