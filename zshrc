@@ -120,6 +120,10 @@ if [[ -d "$HOME/Applications/Android/SDK" ]]; then
 	export PATH=$PATH:$ANDROID_HOME/platform-tools
 fi
 
+if [[ -d "${HOME}/.python3-venv/bin" ]]; then
+    export PATH="${PATH}:${HOME}/.python3-venv/bin"
+fi
+
 alias git-fuck="git add . && git commit --amend --no-edit -a && git push --force"
 
 if [[ -d "${HOME}"/.local/state/vs-kubernetes-tools  ]]; then
@@ -140,11 +144,8 @@ if [[ -d "${HOME}/.config/Code/User/globalStorage/ms-vscode-remote.remote-contai
 	export PATH=$PATH:"${HOME}/.config/Code/User/globalStorage/ms-vscode-remote.remote-containers/cli-bin"
 fi
 
-if [[ -e "$HOME/.zsh/kubernetes.sh" ]]; then
-	source "$HOME/.zsh/kubernetes.sh"
-elif [[ -n "$(which kubectl 2>/dev/null)" ]]; then
-	echo "Generating kubectl completions..."
-	mkdir "$HOME/.zsh" || true
+if [[ -n "$(which kubectl 2>/dev/null)" ]]; then
+	mkdir "$HOME/.zsh" &>/dev/null || true
 	kubectl completion zsh > "$HOME/.zsh/kubernetes.sh"
 	source "$HOME/.zsh/kubernetes.sh"
 fi
