@@ -77,7 +77,7 @@ if [[ -f /etc/profile.d/vte.sh ]]; then
 	fi
 fi
 
-export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$HOME/go/bin:$HOME/.bin:$HOME/.local/bin:$HOME/.cache/cloud-code/installer/google-cloud-sdk/bin:/usr/local/bin:${PATH}"
+export PATH="${HOME}/.venv/bin:${KREW_ROOT:-$HOME/.krew}/bin:$HOME/go/bin:$HOME/.local/bin:$HOME/.cache/cloud-code/installer/google-cloud-sdk/bin:/usr/local/bin:${PATH}"
 
 RICH_TERMINALS="iTerm.app Terminal-Plus Babun gnome gnome-wayland powerline-compat gnome-terminal chrome code deepin-terminal"
 
@@ -146,6 +146,7 @@ fi
 
 if [[ -n "$(which kubectl 2>/dev/null)" ]]; then
 	mkdir "$HOME/.zsh" &>/dev/null || true
+    unalias kubectl &>/dev/null
 	kubectl completion zsh > "$HOME/.zsh/kubernetes.sh"
 	source "$HOME/.zsh/kubernetes.sh"
 fi
@@ -186,3 +187,7 @@ if [[ -d "${HOME}/Documents/Code/salt" ]]; then
 fi
 
 [[ ! -f ~/.p10k.zsh ]] || source "${HOME}"/.p10k.zsh
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
