@@ -13,11 +13,8 @@ LOCAL_ARCH=$(uname -m)
 case "$LOCAL_ARCH" in
     x86_64)
         LOCAL_ARCH=("amd64" "x86_64")
-        KUBECTL_ARCH="amd64"
         ;;
     *)
-        # shellcheck disable=SC2128
-        KUBECTL_ARCH="${LOCAL_ARCH}"
         # shellcheck disable=SC2128
         LOCAL_ARCH=("${LOCAL_ARCH}")
         ;;
@@ -85,8 +82,17 @@ download_latest_release() {
     latest_release_json=$(curl -s "https://api.github.com/repos/$repo/releases/latest")
     latest_release=$(echo "${latest_release_json}" | grep -e '"tag_name"' | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')
 
+    info "📦 Latest release found: $latest_release."
+
     for arch in "${LOCAL_ARCH[@]}"; do
+        # https://github.com/cantino/mcfly/releases/download/v0.9.3/mcfly-v0.9.3-x86_64-unknown-linux-musl.tar.gz
         binary_url=$(echo "$latest_release_json" | grep -Ei "browser_download_url.*$binary_name.*$LOCAL_OS.*$arch(.*$latest_release)?(\.|$format)\"" | cut -d '"' -f 4)
+
+        if [[ -n "$binary_url" ]]; then
+            break
+        fi
+
+        binary_url=$(echo "$latest_release_json" | grep -Ei "browser_download_url.*$binary_name.*(.*$latest_release)?.*$arch.*$LOCAL_OS.*(\.|$format)\"" | cut -d '"' -f 4)
 
         if [[ -n "$binary_url" ]]; then
             break
@@ -94,7 +100,7 @@ download_latest_release() {
     done
 
     if [[ -z "$binary_url" ]]; then
-        error "❌ Error: Could not find the binary $binary_name for $LOCAL_OS/$LOCAL_ARCH in the latest release."
+        error "❌ Error: Could not find the binary $binary_name for $LOCAL_OS/${LOCAL_ARCH[*]} in the latest release."
 
         if [[ "${ENABLE_DEBUG}" = "true" ]]; then
             if which yq &>/dev/null; then
@@ -214,6 +220,8 @@ if [[ ! "${TEMP_DIR}" = /tmp/dotfiles.* ]] && [[ ! "${TEMP_DIR}" = "${HOME}"/.tm
 fi
 
 trap 'rm -Rf "${TEMP_DIR:?}"' EXIT
+
+info "Installing for ${LOCAL_OS} on ${LOCAL_ARCH[*]}..."
 
 info "Installing custom binaries..."
 if [[ ! -d "${HOME}/.local/bin" ]]; then
