@@ -25,7 +25,7 @@ ZSH_THEME="powerlevel10k/powerlevel10k"
 HYPHEN_INSENSITIVE="true"
 COMPLETION_WAITING_DOTS="true"
 
-plugins=(k genpass gitfast kubetail colored-man-pages colorize docker helm ubuntu vagrant zsh-autosuggestions zsh-syntax-highlighting)
+plugins=(k genpass gitfast kubetail colored-man-pages colorize docker helm ubuntu vagrant zsh-autosuggestions zsh-syntax-highlighting zsh-github-copilot)
 
 if which thefuck &>/dev/null; then
 	plugins+=(thefuck)
@@ -67,7 +67,11 @@ function _my_clear() {
 	zle clear-screen
 }
 zle -N _my_clear
+
 bindkey '^l' _my_clear
+bindkey '\C-i' zsh_gh_copilot_suggest
+# TODO: Figure out how to bind explain ,the below doesn't wokr.
+# bindkey '\C-S-i' zsh_gh_copilot_explain
 
 export EDITOR='vim'
 
