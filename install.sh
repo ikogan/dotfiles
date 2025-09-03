@@ -240,6 +240,11 @@ extract_download "mcfly" "tar.gz" || exit 1
 install --mode=0755 "${TEMP_DIR}"/mcfly "${HOME}/.local/bin"
 info "🎉 Successfully installed McFly!"
 
+download_latest_release "kubecolor/kubecolor" "kubecolor" "tar.gz" || exit 1
+extract_download "kubecolor" "tar.gz" || exit 1
+install --mode=0755 "${TEMP_DIR}/kubecolor" "$HOME/.local/bin/kubecolor" || exit 1
+info "🎉 Successfully installed Kubecolor!"
+
 if [[ "$(uname -o)" = "Android" ]]; then
     info "Krew seems to blow up on Android, skipping."
 else
@@ -250,7 +255,7 @@ else
     info "🎉 Successfully installed Krew!"
 
     info "Installing Krew plugins..."
-    kubectl krew install neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff
+    kubectl krew install blame iexec neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff
 fi
 
 echo "Linking dotfiles..."

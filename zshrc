@@ -19,6 +19,7 @@ fi
 
 export ZSH_2000_DISABLE_RVM='true'
 export ZSH="${HOME}/.oh-my-zsh"
+export PATH="${HOME}/.venv/bin:${KREW_ROOT:-$HOME/.krew}/bin:$HOME/go/bin:$HOME/.local/bin:$HOME/.cache/cloud-code/installer/google-cloud-sdk/bin:/usr/local/bin:${PATH}"
 
 ZSH_THEME="powerlevel10k/powerlevel10k"
 
@@ -69,7 +70,7 @@ function _my_clear() {
 zle -N _my_clear
 
 bindkey '^l' _my_clear
-bindkey '\C-i' zsh_gh_copilot_suggest
+#bindkey '\C-i' zsh_gh_copilot_suggest
 # TODO: Figure out how to bind explain ,the below doesn't wokr.
 # bindkey '\C-S-i' zsh_gh_copilot_explain
 
@@ -80,8 +81,6 @@ if [[ -f /etc/profile.d/vte.sh ]]; then
 		source /etc/profile.d/vte.sh
 	fi
 fi
-
-export PATH="${HOME}/.venv/bin:${KREW_ROOT:-$HOME/.krew}/bin:$HOME/go/bin:$HOME/.local/bin:$HOME/.cache/cloud-code/installer/google-cloud-sdk/bin:/usr/local/bin:${PATH}"
 
 RICH_TERMINALS="iTerm.app Terminal-Plus Babun gnome gnome-wayland powerline-compat gnome-terminal chrome code deepin-terminal"
 
@@ -184,6 +183,11 @@ if which highlight &>/dev/null; then
     function pretty() {
         highlight -l -O xterm256 --style=molokai --syntax="$1"
     }
+fi
+
+if which kubecolor &>/dev/null; then
+    alias kubectl=kubecolor
+    compdef kubecolor=kubectl
 fi
 
 if [[ -d "${HOME}/Documents/Code/salt" ]]; then
