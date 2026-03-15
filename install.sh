@@ -2,6 +2,7 @@
 SCRIPTPATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 HAVE_GUM="$(which gum 2>/dev/null && 'true')"
 TEMP_DIR=$(mktemp -d)
+PATH="${HOME}"/.local/bin:"${PATH}"
 
 pushd "${SCRIPTPATH}" &>/dev/null || exit
 
@@ -264,6 +265,9 @@ for EACH in "${SCRIPTPATH}"/dotfiles/*; do
         ln -svf "${EACH}" ~/".$(basename "${EACH}")"
     fi
 done
+
+echo "Linking local binaries..."
+ln -svf "${SCRIPTPATH}/kubeseal-interactive" "${HOME}/.local/bin/kubeseal-interactive"
 
 echo "Installing Oh-My-Tmux..."
 ln -s "$(pwd)"/oh-my-tmux/.tmux.conf "${HOME}/.tmux.conf"
