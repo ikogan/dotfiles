@@ -175,6 +175,8 @@ if [[ -n "${KUBERNETES_DIAGNOSTIC_IMAGE}" ]] && [[ -n "${KUBERNETES_DIAGNOSTIC_S
     fi
 fi
 
+secret-tool lookup service copilot-cli account "https://github.com:ikogan" > ~/.copilot/github-token && chmod 600 ~/.copilot/github-token
+
 if [[ -e "${HOME}/.zsh-aliases" ]]; then
     . "${HOME}/.zsh-aliases"
 fi
@@ -184,6 +186,8 @@ if which highlight &>/dev/null; then
         highlight -l -O xterm256 --style=molokai --syntax="$1"
     }
 fi
+
+alias kubeseal=kubeseal-interactive
 
 if which kubecolor &>/dev/null; then
     alias kubectl=kubecolor
@@ -195,6 +199,12 @@ if [[ -d "${HOME}/Documents/Code/salt" ]]; then
 fi
 
 [[ ! -f ~/.p10k.zsh ]] || source "${HOME}"/.p10k.zsh
+
+if which pyenv &>/dev/null; then
+    export PYENV_ROOT="$HOME/.pyenv"
+    [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
+    eval "$(pyenv init - zsh)"
+fi
 
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm

@@ -1,0 +1,55 @@
+#!/usr/bin/env zsh
+# Interactive wrapper around kubeseal that prompts for scope, namespace, and
+# secret name as required, then reads the plaintext value from stdin.
+
+KUBESEAL_ARGS=(--controller-name=sealed-secrets --controller-namespace=sealed-secrets)
+
+# Scope selection
+echo "Select scope:" >&2
+echo "  1) Cluster-Wide" >&2
+echo "  2) Namespace-Wide" >&2
+echo "  3) Strict" >&2
+printf "Choice [1-3]: " >&2
+read -r scope_choice
+
+case "$scope_choice" in
+    1)
+        KUBESEAL_ARGS+=(--scope cluster-wide)
+        ;;
+    2)
+        printf "Namespace: " >&2
+        read -r namespace
+        if [[ -z "$namespace" ]]; then
+            echo "Error: namespace is required for namespace-wide scope." >&2
+            exit 1
+        fi
+        KUBESEAL_ARGS+=(--scope namespace-wide --namespace "$namespace")
+        ;;
+    3)
+        printf "Namespace: " >&2
+        read -r namespace
+        if [[ -z "$namespace" ]]; then
+            echo "Error: namespace is required for strict scope." >&2
+            exit 1
+        fi
+        printf "Secret name: " >&2
+        read -r secret_name
+        if [[ -z "$secret_name" ]]; then
+            echo "Error: secret name is required for strict scope." >&2
+            exit 1
+        fi
+        KUBESEAL_ARGS+=(--scope strict --namespace "$namespace" --name "$secret_name")
+        ;;
+    *)
+        echo "Error: invalid choice '$scope_choice'." >&2
+        exit 1
+        ;;
+esac
+
+# Read value
+echo "Enter value (Ctrl+D when done):" >&2
+value="$(cat)"
+value="${value#"${value%%[![:space:]]*}"}"
+value="${value%"${value##*[![:space:]]}"}"
+
+printf '%s' "$value" | command kubeseal --raw "${KUBESEAL_ARGS[@]}" "$@"
