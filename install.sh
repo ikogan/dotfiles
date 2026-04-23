@@ -1,12 +1,25 @@
 #!/bin/bash
 SCRIPTPATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
-HAVE_GUM="$(which gum 2>/dev/null && 'true')"
+HAVE_GUM=""
 TEMP_DIR=$(mktemp -d)
 PATH="${HOME}"/.local/bin:"${PATH}"
 
+has_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
 pushd "${SCRIPTPATH}" &>/dev/null || exit
 
-git submodule update --recursive --remote --init
+if has_cmd git; then
+    git submodule update --recursive --remote --init || \
+        echo "⚠️  git is available, but submodule update failed. Submodule-dependent setup may be skipped."
+else
+    echo "⚠️  git is not installed. Skipping submodule update and submodule-dependent setup unless files already exist."
+fi
+
+if has_cmd gum; then
+    HAVE_GUM="true"
+fi
 
 # Determine the operating system and architecture
 LOCAL_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -74,6 +87,11 @@ download_latest_release() {
     local checksum_url
     local binary_url
 
+    if ! has_cmd curl; then
+        warn "⚠️  Skipping ${binary_name}: curl is not available."
+        return 1
+    fi
+
     if [[ -n "${format}" ]]; then
         format=".$format"
     fi
@@ -104,7 +122,7 @@ download_latest_release() {
         error "❌ Error: Could not find the binary $binary_name for $LOCAL_OS/${LOCAL_ARCH[*]} in the latest release."
 
         if [[ "${ENABLE_DEBUG}" = "true" ]]; then
-            if which yq &>/dev/null; then
+            if has_cmd yq; then
                 debug "JSON from GitHub:"
                 yq -P -C -o json <<< "${latest_release_json}"
             else
@@ -139,7 +157,7 @@ download_latest_release() {
             gum spin --show-error --show-output --title="Downloading checksums..." -- \
                 curl -sL --show-error "$checksum_url" -o "${TEMP_DIR}/${binary_name}_checksums"
         else
-            info -e "🔗 Downloading checksums..."
+            info "🔗 Downloading checksums..."
             curl -L --show-error "$checksum_url" -o "${TEMP_DIR}/${binary_name}_checksums"
         fi
 
@@ -188,39 +206,61 @@ extract_download() {
     esac
 }
 
-if ! which which &>/dev/null; then
-    error "The 'which' command is missing. Please install it first." 1>&2
-    exit 1
+setup_temp_dir() {
+    local candidate=""
+
+    if ! has_cmd mktemp; then
+        warn "⚠️  mktemp is unavailable. Skipping temp-directory based install steps."
+        TEMP_DIR=""
+        return 1
+    fi
+
+    if [[ "$(uname -o)" = "Android" ]]; then
+        test -d "${HOME}/.tmp" || mkdir -p "${HOME}/.tmp"
+        candidate=$(mktemp -d "${HOME}/.tmp/dotfiles.XXXXX" 2>/dev/null)
+    else
+        candidate=$(mktemp -d /tmp/dotfiles.XXXXX 2>/dev/null)
+    fi
+
+    if [[ -z "${candidate}" ]] || [[ ! -d "${candidate}" ]]; then
+        warn "⚠️  Could not create preferred temporary directory. Trying fallback in HOME."
+        test -d "${HOME}/.tmp" || mkdir -p "${HOME}/.tmp"
+        candidate=$(mktemp -d "${HOME}/.tmp/dotfiles-fallback.XXXXX" 2>/dev/null)
+    fi
+
+    if [[ -z "${candidate}" ]] || [[ ! -d "${candidate}" ]]; then
+        warn "⚠️  Could not create any temporary directory. Skipping temp-directory based install steps."
+        TEMP_DIR=""
+        return 1
+    fi
+
+    TEMP_DIR="${candidate}"
+    return 0
+}
+
+if ! has_cmd tmux; then
+    warn "⚠️  tmux is not installed. Skipping tmux-specific setup."
 fi
 
-if [[ -z "$(which tmux 2>/dev/null)" ]]; then
-    error "Tmux is needed for some things, please install it." 1>&2
-    exit 1
-fi
-
-if ! python3 -c 'import ensurepip' &>/dev/null; then
-    error "Python 3 Pip and VirtualEnv are needed for some things, please install python3-venv" 1>&2
-    exit 1
-fi
-
-if [[ "$(uname -o)" = "Android" ]]; then
-  test -d "${HOME}/.tmp" || mkdir "${HOME}/.tmp"
-  TEMP_DIR=$(mktemp -d "${HOME}/.tmp/dotfiles.XXXXX") || exit 1
+HAVE_ZSH=""
+if has_cmd zsh; then
+    HAVE_ZSH="true"
 else
-  TEMP_DIR=$(mktemp -d /tmp/dotfiles.XXXXX) || exit 1
+    warn "⚠️  zsh is not installed. Skipping zsh setup."
 fi
 
-if [[ ! -d "${TEMP_DIR}" ]]; then
-    error "Error: Could not create temporary directory." 1>&2
-    exit 1
+HAVE_PYTHON_VENV=""
+if has_cmd python3 && python3 -c 'import ensurepip' &>/dev/null; then
+    HAVE_PYTHON_VENV="true"
+else
+    warn "⚠️  python3 with ensurepip is unavailable. Skipping Python virtualenv setup."
 fi
 
-if [[ ! "${TEMP_DIR}" = /tmp/dotfiles.* ]] && [[ ! "${TEMP_DIR}" = "${HOME}"/.tmp/dotfiles.* ]]; then
-    error "Error: Temporary directory is weird: ${TEMP_DIR}." 1>&2
-    exit 1
+if setup_temp_dir; then
+        trap '[[ -n "${TEMP_DIR}" ]] && rm -Rf "${TEMP_DIR:?}"' EXIT
+else
+        warn "⚠️  Continuing without temporary directory. Download/extract-based installs will be skipped."
 fi
-
-trap 'rm -Rf "${TEMP_DIR:?}"' EXIT
 
 info "Installing for ${LOCAL_OS} on ${LOCAL_ARCH[*]}..."
 
@@ -229,34 +269,72 @@ if [[ ! -d "${HOME}/.local/bin" ]]; then
     mkdir "${HOME}/.local/bin"
 fi
 
-download_latest_release "charmbracelet/gum" "gum" "tar.gz" || exit 1
-extract_download "gum" "tar.gz" || exit 1
-install --mode=0755 "${TEMP_DIR}/gum"*/"gum" "$HOME/.local/bin/gum" || exit 1
-info "🎉 Successfully installed gum!"
+if [[ -n "${TEMP_DIR}" ]]; then
+    if download_latest_release "charmbracelet/gum" "gum" "tar.gz" \
+        && extract_download "gum" "tar.gz" \
+        && install --mode=0755 "${TEMP_DIR}/gum"*/"gum" "$HOME/.local/bin/gum"; then
+        info "🎉 Successfully installed gum!"
+    else
+        warn "⚠️  Failed to install gum. Continuing without it."
+    fi
+else
+    warn "⚠️  Skipping gum installation because temporary directory is unavailable."
+fi
 
-HAVE_GUM="true"
+if has_cmd gum; then
+    HAVE_GUM="true"
+fi
 
-download_latest_release "cantino/mcfly" "mcfly" "tar.gz" || exit 1
-extract_download "mcfly" "tar.gz" || exit 1
-install --mode=0755 "${TEMP_DIR}"/mcfly "${HOME}/.local/bin"
-info "🎉 Successfully installed McFly!"
+if [[ -n "${TEMP_DIR}" ]]; then
+    if download_latest_release "cantino/mcfly" "mcfly" "tar.gz" \
+        && extract_download "mcfly" "tar.gz" \
+        && install --mode=0755 "${TEMP_DIR}"/mcfly "${HOME}/.local/bin"; then
+        info "🎉 Successfully installed McFly!"
+    else
+        warn "⚠️  Failed to install McFly."
+    fi
+else
+    warn "⚠️  Skipping McFly installation because temporary directory is unavailable."
+fi
 
-download_latest_release "kubecolor/kubecolor" "kubecolor" "tar.gz" || exit 1
-extract_download "kubecolor" "tar.gz" || exit 1
-install --mode=0755 "${TEMP_DIR}/kubecolor" "$HOME/.local/bin/kubecolor" || exit 1
-info "🎉 Successfully installed Kubecolor!"
+if [[ -n "${TEMP_DIR}" ]]; then
+    if download_latest_release "kubecolor/kubecolor" "kubecolor" "tar.gz" \
+        && extract_download "kubecolor" "tar.gz" \
+        && install --mode=0755 "${TEMP_DIR}/kubecolor" "$HOME/.local/bin/kubecolor"; then
+        info "🎉 Successfully installed Kubecolor!"
+    else
+        warn "⚠️  Failed to install Kubecolor."
+    fi
+else
+    warn "⚠️  Skipping Kubecolor installation because temporary directory is unavailable."
+fi
 
 if [[ "$(uname -o)" = "Android" ]]; then
     info "Krew seems to blow up on Android, skipping."
 else
-    download_latest_release "kubernetes-sigs/krew" "krew" "tar.gz" || exit 1
-    extract_download "krew" "tar.gz" || exit 1
-    # shellcheck disable=SC2211
-    "${TEMP_DIR}"/krew-* install krew
-    info "🎉 Successfully installed Krew!"
+    if [[ -n "${TEMP_DIR}" ]]; then
+        if download_latest_release "kubernetes-sigs/krew" "krew" "tar.gz" \
+            && extract_download "krew" "tar.gz"; then
+            # shellcheck disable=SC2211
+            if "${TEMP_DIR}"/krew-* install krew; then
+                info "🎉 Successfully installed Krew!"
 
-    info "Installing Krew plugins..."
-    kubectl krew install blame iexec neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff
+                if has_cmd kubectl; then
+                    info "Installing Krew plugins..."
+                    kubectl krew install blame iexec neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff || \
+                        warn "⚠️  Failed to install one or more Krew plugins."
+                else
+                    warn "⚠️  kubectl is not installed. Skipping Krew plugin installation."
+                fi
+            else
+                warn "⚠️  Failed to install Krew."
+            fi
+        else
+            warn "⚠️  Could not download or extract Krew."
+        fi
+    else
+        warn "⚠️  Skipping Krew installation because temporary directory is unavailable."
+    fi
 fi
 
 echo "Linking dotfiles..."
@@ -270,47 +348,90 @@ echo "Linking local binaries..."
 ln -svf "${SCRIPTPATH}/kubeseal-interactive" "${HOME}/.local/bin/kubeseal-interactive"
 
 echo "Installing Oh-My-Tmux..."
-ln -s "$(pwd)"/oh-my-tmux/.tmux.conf "${HOME}/.tmux.conf"
+if has_cmd tmux; then
+    if [[ -f "$(pwd)/oh-my-tmux/.tmux.conf" ]]; then
+        ln -s "$(pwd)"/oh-my-tmux/.tmux.conf "${HOME}/.tmux.conf" || warn "⚠️  Failed to link .tmux.conf"
+    else
+        warn "⚠️  Skipping Oh-My-Tmux setup because submodule files are missing."
+    fi
+else
+    warn "⚠️  Skipping Oh-My-Tmux setup because tmux is unavailable."
+fi
 
-echo "Installing Oh-My-ZSH..."
-sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+if [[ -n "${HAVE_ZSH}" ]]; then
+    echo "Installing Oh-My-ZSH..."
+    if has_cmd curl; then
+        sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || \
+            warn "⚠️  Oh-My-ZSH installation failed."
+    else
+        warn "⚠️  curl is unavailable. Skipping Oh-My-ZSH installation."
+    fi
+fi
 
 if [[ -d "${HOME}/.vim" ]]; then
     echo "  Cleaning up existing vim configuration..."
     rm -Rf "${HOME}/.vim/*"
 fi
 
-if which vim &>/dev/null; then
+if has_cmd vim; then
     echo "Installing NeoBundle..."
-    sh -c "$(curl https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended
+    if has_cmd curl; then
+        sh -c "$(curl https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended || \
+            warn "⚠️  NeoBundle install script failed."
+    else
+        warn "⚠️  curl is unavailable. Skipping NeoBundle installation."
+    fi
 fi
 
 echo "Creating Python Virtual Environment..."
-python3 -m venv "${HOME}/.venv"
-"${HOME}"/.venv/bin/python3 -m pip install --upgrade habitipy
+if [[ -n "${HAVE_PYTHON_VENV}" ]]; then
+    if python3 -m venv "${HOME}/.venv"; then
+        "${HOME}"/.venv/bin/python3 -m pip install --upgrade habitipy || warn "⚠️  Failed to install habitipy in virtualenv."
+    else
+        warn "⚠️  Failed to create Python virtual environment."
+    fi
+else
+    warn "⚠️  Skipping Python virtual environment creation."
+fi
 
 echo "Linking files..."
-touch "${HOME}/.zsh_history"
-ln -svf "${SCRIPTPATH}/zshrc" ~/.zshrc
-ln -svf "${SCRIPTPATH}/p10k.zsh" ~/.p10k.zsh
+if [[ -n "${HAVE_ZSH}" ]]; then
+    touch "${HOME}/.zsh_history"
+    ln -svf "${SCRIPTPATH}/zshrc" ~/.zshrc
+    ln -svf "${SCRIPTPATH}/p10k.zsh" ~/.p10k.zsh
+fi
 
-if which vim &>/dev/null; then
+if has_cmd vim; then
     ln -svf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
     ln -svf "${SCRIPTPATH}/vim/vimrc.local" ~/.vimrc.local
     ln -svf "${SCRIPTPATH}/vim/vimrc.local.bundles" ~/.vimrc.local.bundles
 fi
 
-echo "Linking Oh-My-ZSH Plugins and Themes..."
-for PLUGIN in "${SCRIPTPATH}"/oh-my-zsh/plugins/*; do
-    ln -svf "${PLUGIN}" ~/.oh-my-zsh/custom/plugins/"$(basename "${PLUGIN}")"
-done
-for THEME in "${SCRIPTPATH}"/oh-my-zsh/themes/*; do
-    ln -svf "${THEME}" ~/.oh-my-zsh/custom/themes/"$(basename "${THEME}")"
-done
+if [[ -n "${HAVE_ZSH}" ]]; then
+    echo "Linking Oh-My-ZSH Plugins and Themes..."
+    if [[ -d "${SCRIPTPATH}/oh-my-zsh/plugins" ]] && [[ -d "${SCRIPTPATH}/oh-my-zsh/themes" ]]; then
+        if [[ -d "${HOME}/.oh-my-zsh/custom" ]]; then
+            for PLUGIN in "${SCRIPTPATH}"/oh-my-zsh/plugins/*; do
+                ln -svf "${PLUGIN}" ~/.oh-my-zsh/custom/plugins/"$(basename "${PLUGIN}")"
+            done
+            for THEME in "${SCRIPTPATH}"/oh-my-zsh/themes/*; do
+                ln -svf "${THEME}" ~/.oh-my-zsh/custom/themes/"$(basename "${THEME}")"
+            done
+        else
+            warn "⚠️  ~/.oh-my-zsh/custom is missing. Skipping custom plugin/theme linking."
+        fi
+    else
+        warn "⚠️  Local oh-my-zsh plugin/theme files are missing. Skipping plugin/theme linking."
+    fi
+fi
 
-if which vim &>/dev/null; then
+if has_cmd vim; then
     echo "Installing all NeoBundles..."
-    "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall"
+    if [[ -x "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" ]]; then
+        "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" || warn "⚠️  NeoBundle installation step failed."
+    else
+        warn "⚠️  neoinstall not found. Skipping NeoBundle package install."
+    fi
 fi
 
 popd &>/dev/null || exit
