@@ -31,15 +31,35 @@ if which thefuck &>/dev/null; then
 	plugins+=(thefuck)
 fi
 
+dotfiles_load_oh_my_zsh() {
+	local omz_file="${ZSH}/oh-my-zsh.sh"
+
+	if [[ ! -f "${omz_file}" ]]; then
+		echo "Warning: Oh My Zsh is not installed. Continuing with base zsh configuration." 1>&2
+		return 1
+	fi
+
+	if source "${omz_file}"; then
+		return 0
+	fi
+
+	echo "Warning: Oh My Zsh failed to load with configured plugins. Retrying with plugins disabled." 1>&2
+	plugins=()
+
+	if source "${omz_file}"; then
+		echo "Warning: Oh My Zsh loaded with plugins disabled to keep the shell usable." 1>&2
+		return 0
+	fi
+
+	echo "Warning: Oh My Zsh failed to load even with plugins disabled. Continuing without it." 1>&2
+	return 1
+}
+
 setopt histfcntllock
 
 zstyle :omz:plugins:ssh-agent agent-forwarding on
 
-if [[ -f "${ZSH}/oh-my-zsh.sh" ]]; then
-	source "${ZSH}/oh-my-zsh.sh"
-else
-	echo "Warning: Oh My Zsh is not installed. Continuing with base zsh configuration." 1>&2
-fi
+dotfiles_load_oh_my_zsh || true
 
 typeset -gA ZSH_HIGHLIGHT_STYLES
 

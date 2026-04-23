@@ -319,6 +319,18 @@ else
     warn "⚠️  Skipping Kubecolor installation because temporary directory is unavailable."
 fi
 
+if [[ -n "${TEMP_DIR}" ]]; then
+    if download_latest_release "cli/cli" "gh" "tar.gz" \
+        && extract_download "gh" "tar.gz" \
+        && install --mode=0755 "${TEMP_DIR}"/gh_*/bin/gh "${HOME}/.local/bin/gh"; then
+        info "🎉 Successfully installed GitHub CLI (gh)!"
+    else
+        warn "⚠️  Failed to install GitHub CLI (gh)."
+    fi
+else
+    warn "⚠️  Skipping GitHub CLI (gh) installation because temporary directory is unavailable."
+fi
+
 if [[ "$(uname -o)" = "Android" ]]; then
     info "Krew seems to blow up on Android, skipping."
 else
