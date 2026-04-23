@@ -8,6 +8,10 @@ has_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+is_devcontainer() {
+    [[ -n "${REMOTE_CONTAINERS:-}" ]] || [[ -n "${DEVCONTAINER:-}" ]] || [[ -n "${CODESPACES:-}" ]] || [[ -f "/.dockerenv" && -d "/workspaces" ]]
+}
+
 pushd "${SCRIPTPATH}" &>/dev/null || exit
 
 if has_cmd git; then
@@ -256,6 +260,12 @@ else
     warn "⚠️  python3 with ensurepip is unavailable. Skipping Python virtualenv setup."
 fi
 
+IN_DEVCONTAINER=""
+if is_devcontainer; then
+    IN_DEVCONTAINER="true"
+    info "Detected devcontainer environment. Skipping vim and plugin installation/setup."
+fi
+
 if setup_temp_dir; then
         trap '[[ -n "${TEMP_DIR}" ]] && rm -Rf "${TEMP_DIR:?}"' EXIT
 else
@@ -389,12 +399,22 @@ if [[ -n "${HAVE_ZSH}" ]]; then
     fi
 fi
 
-if [[ -d "${HOME}/.vim" ]]; then
+echo "Installing Bash-it..."
+if [[ -d "${HOME}/.bash_it" ]]; then
+    info "Bash-it already installed."
+elif has_cmd git; then
+    git clone --depth=1 https://github.com/Bash-it/bash-it.git "${HOME}/.bash_it" || \
+        warn "⚠️  Bash-it installation failed."
+else
+    warn "⚠️  git is unavailable. Skipping Bash-it installation."
+fi
+
+if [[ -z "${IN_DEVCONTAINER}" ]] && [[ -d "${HOME}/.vim" ]]; then
     echo "  Cleaning up existing vim configuration..."
     rm -Rf "${HOME}/.vim/*"
 fi
 
-if has_cmd vim; then
+if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
     echo "Installing NeoBundle..."
     if has_cmd curl; then
         sh -c "$(curl https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended || \
@@ -428,10 +448,13 @@ if [[ -n "${HAVE_ZSH}" ]]; then
     ln -svf "${SCRIPTPATH}/zshrc" ~/.zshrc
 fi
 
+touch "${HOME}/.bash_history"
+ln -svf "${SCRIPTPATH}/bashrc" ~/.bashrc
+
 mkdir -p "${HOME}/.config"
 ln -svf "${SCRIPTPATH}/starship.toml" "${HOME}/.config/starship.toml"
 
-if has_cmd vim; then
+if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
     ln -svf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
     ln -svf "${SCRIPTPATH}/vim/vimrc.local" ~/.vimrc.local
     ln -svf "${SCRIPTPATH}/vim/vimrc.local.bundles" ~/.vimrc.local.bundles
@@ -455,7 +478,7 @@ if [[ -n "${HAVE_ZSH}" ]]; then
     fi
 fi
 
-if has_cmd vim; then
+if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
     echo "Installing all NeoBundles..."
     if [[ -x "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" ]]; then
         "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" || warn "⚠️  NeoBundle installation step failed."
