@@ -276,7 +276,7 @@ info "Installing for ${LOCAL_OS} on ${LOCAL_ARCH[*]}..."
 
 info "Installing custom binaries..."
 if [[ ! -d "${HOME}/.local/bin" ]]; then
-    mkdir "${HOME}/.local/bin"
+    mkdir -p "${HOME}/.local/bin"
 fi
 
 if [[ -n "${TEMP_DIR}" ]]; then
