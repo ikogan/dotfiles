@@ -1,7 +1,3 @@
-if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
-  source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
-fi
-
 if [[ -f "${HOME}/.dotfilesrc" ]]; then
 	source "${HOME}/.dotfilesrc"
 fi
@@ -21,7 +17,7 @@ export ZSH_2000_DISABLE_RVM='true'
 export ZSH="${HOME}/.oh-my-zsh"
 export PATH="${HOME}/.venv/bin:${KREW_ROOT:-$HOME/.krew}/bin:$HOME/go/bin:$HOME/.local/bin:$HOME/.cache/cloud-code/installer/google-cloud-sdk/bin:/usr/local/bin:${PATH}"
 
-ZSH_THEME="powerlevel10k/powerlevel10k"
+ZSH_THEME=""
 
 HYPHEN_INSENSITIVE="true"
 COMPLETION_WAITING_DOTS="true"
@@ -175,7 +171,9 @@ if [[ -n "${KUBERNETES_DIAGNOSTIC_IMAGE}" ]] && [[ -n "${KUBERNETES_DIAGNOSTIC_S
     fi
 fi
 
-secret-tool lookup service copilot-cli account "https://github.com:ikogan" > ~/.copilot/github-token && chmod 600 ~/.copilot/github-token
+if which secret-tool &>/dev/null; then
+    secret-tool lookup service copilot-cli account "https://github.com:ikogan" > ~/.copilot/github-token && chmod 600 ~/.copilot/github-token
+fi
 
 if [[ -e "${HOME}/.zsh-aliases" ]]; then
     . "${HOME}/.zsh-aliases"
@@ -198,7 +196,7 @@ if [[ -d "${HOME}/Documents/Code/salt" ]]; then
     source "${HOME}/Documents/Code/salt/bootstrap/bashrc.sh"
 fi
 
-[[ ! -f ~/.p10k.zsh ]] || source "${HOME}"/.p10k.zsh
+
 
 if which pyenv &>/dev/null; then
     export PYENV_ROOT="$HOME/.pyenv"
@@ -209,3 +207,7 @@ fi
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+if command -v starship &>/dev/null; then
+    eval "$(starship init zsh)"
+fi

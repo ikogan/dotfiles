@@ -337,6 +337,17 @@ else
     fi
 fi
 
+if has_cmd curl; then
+    info "Installing Starship..."
+    if curl -sS https://starship.rs/install.sh | sh -s -- --bin-dir "${HOME}/.local/bin" --yes; then
+        info "🎉 Successfully installed Starship!"
+    else
+        warn "⚠️  Failed to install Starship."
+    fi
+else
+    warn "⚠️  Skipping Starship installation because curl is unavailable."
+fi
+
 echo "Linking dotfiles..."
 for EACH in "${SCRIPTPATH}"/dotfiles/*; do
     if [[ -f "${EACH}" ]]; then
@@ -359,15 +370,22 @@ else
 fi
 
 if [[ -n "${HAVE_ZSH}" ]]; then
-    echo "Installing Oh-My-ZSH..."
-    if [[ -d "${HOME}/.oh-my-zsh" ]] && [[ -n "${ZSH_VERSION}" ]] && has_cmd omz; then
-        info "Oh-My-ZSH already installed. Running update..."
-        omz update || warn "⚠️  Oh-My-ZSH update failed."
-    elif has_cmd curl; then
-        sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || \
-            warn "⚠️  Oh-My-ZSH installation failed."
+    if [[ -d "${HOME}/.oh-my-zsh" ]]; then
+        info "Oh-My-ZSH already installed."
+        if [[ -n "${ZSH_VERSION}" ]] && type omz &>/dev/null 2>&1; then
+            info "Running Oh-My-ZSH update..."
+            omz update || warn "⚠️  Oh-My-ZSH update failed."
+        else
+            info "ℹ️  omz not available in this shell session. Skipping update."
+        fi
     else
-        warn "⚠️  curl is unavailable. Skipping Oh-My-ZSH installation."
+        echo "Installing Oh-My-ZSH..."
+        if has_cmd curl; then
+            sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || \
+                warn "⚠️  Oh-My-ZSH installation failed."
+        else
+            warn "⚠️  curl is unavailable. Skipping Oh-My-ZSH installation."
+        fi
     fi
 fi
 
@@ -397,12 +415,21 @@ else
     warn "⚠️  Skipping Python virtual environment creation."
 fi
 
+echo "Cleaning up Powerlevel10k artifacts..."
+rm -f "${HOME}/.p10k.zsh"
+rm -f "${HOME}"/.cache/p10k-instant-prompt-*.zsh 2>/dev/null || true
+if [[ -L "${HOME}/.oh-my-zsh/custom/themes/powerlevel10k" ]]; then
+    rm -f "${HOME}/.oh-my-zsh/custom/themes/powerlevel10k"
+fi
+
 echo "Linking files..."
 if [[ -n "${HAVE_ZSH}" ]]; then
     touch "${HOME}/.zsh_history"
     ln -svf "${SCRIPTPATH}/zshrc" ~/.zshrc
-    ln -svf "${SCRIPTPATH}/p10k.zsh" ~/.p10k.zsh
 fi
+
+mkdir -p "${HOME}/.config"
+ln -svf "${SCRIPTPATH}/starship.toml" "${HOME}/.config/starship.toml"
 
 if has_cmd vim; then
     ln -svf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
