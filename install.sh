@@ -331,23 +331,38 @@ else
     warn "⚠️  Skipping GitHub CLI (gh) installation because temporary directory is unavailable."
 fi
 
+if has_cmd gh; then
+    if gh extension list 2>/dev/null | grep -qE '(^|[[:space:]])github/gh-copilot([[:space:]]|$)'; then
+        info "ℹ️  GitHub CLI Copilot extension already installed."
+    else
+        info "Installing GitHub CLI Copilot extension..."
+        if gh extension install github/gh-copilot; then
+            info "🎉 Successfully installed GitHub CLI Copilot extension!"
+        else
+            warn "⚠️  Failed to install GitHub CLI Copilot extension."
+        fi
+    fi
+else
+    warn "⚠️  gh is unavailable. Skipping GitHub CLI Copilot extension installation."
+fi
+
 if [[ "$(uname -o)" = "Android" ]]; then
     info "Krew seems to blow up on Android, skipping."
 else
-    if [[ -n "${TEMP_DIR}" ]]; then
+    if has_cmd kubectl && kubectl krew version >/dev/null 2>&1; then
+        info "Krew is already installed. Upgrading Krew..."
+        kubectl krew update || warn "⚠️  Failed to refresh Krew plugin index."
+        krew_upgrade_out=$(kubectl krew upgrade krew 2>&1)
+        krew_upgrade_rc=$?
+        if [[ ${krew_upgrade_rc} -ne 0 ]] && ! grep -qi "already installed\|already up.to.date" <<< "${krew_upgrade_out}"; then
+            warn "⚠️  Failed to upgrade Krew: ${krew_upgrade_out}"
+        fi
+    elif [[ -n "${TEMP_DIR}" ]]; then
         if download_latest_release "kubernetes-sigs/krew" "krew" "tar.gz" \
             && extract_download "krew" "tar.gz"; then
             # shellcheck disable=SC2211
             if "${TEMP_DIR}"/krew-* install krew; then
                 info "🎉 Successfully installed Krew!"
-
-                if has_cmd kubectl; then
-                    info "Installing Krew plugins..."
-                    kubectl krew install blame iexec neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff || \
-                        warn "⚠️  Failed to install one or more Krew plugins."
-                else
-                    warn "⚠️  kubectl is not installed. Skipping Krew plugin installation."
-                fi
             else
                 warn "⚠️  Failed to install Krew."
             fi
@@ -357,28 +372,56 @@ else
     else
         warn "⚠️  Skipping Krew installation because temporary directory is unavailable."
     fi
+
+    if has_cmd kubectl && kubectl krew version >/dev/null 2>&1; then
+        if [[ -n "${HAVE_GUM}" ]]; then
+            if gum spin --show-error --title="Installing Krew plugins..." -- \
+                kubectl krew install blame iexec neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff; then
+                info "🎉 Successfully installed Krew plugins!"
+            else
+                warn "⚠️  Failed to install one or more Krew plugins."
+            fi
+        else
+            info "Installing Krew plugins..."
+            kubectl krew install blame iexec neat view-secret stern grep konfig ktop node-shell nsenter pv-migrate rename-pvc sniff \
+                >/dev/null 2>&1 || warn "⚠️  Failed to install one or more Krew plugins."
+        fi
+    elif has_cmd kubectl; then
+        warn "⚠️  Krew is not available after install/upgrade step. Skipping Krew plugin installation."
+    else
+        warn "⚠️  kubectl is not installed. Skipping Krew plugin installation."
+    fi
 fi
 
 if has_cmd curl; then
-    info "Installing Starship..."
-    if curl -sS https://starship.rs/install.sh | sh -s -- --bin-dir "${HOME}/.local/bin" --yes; then
-        info "🎉 Successfully installed Starship!"
+    if [[ -n "${HAVE_GUM}" ]]; then
+        if gum spin --show-error --title="Installing Starship..." -- \
+            bash -c "curl -fsSL https://starship.rs/install.sh | sh -s -- --bin-dir '${HOME}/.local/bin' --yes"; then
+            info "🎉 Successfully installed Starship!"
+        else
+            warn "⚠️  Failed to install Starship."
+        fi
     else
-        warn "⚠️  Failed to install Starship."
+        info "Installing Starship..."
+        if curl -fsSL https://starship.rs/install.sh | sh -s -- --bin-dir "${HOME}/.local/bin" --yes >/dev/null 2>&1; then
+            info "🎉 Successfully installed Starship!"
+        else
+            warn "⚠️  Failed to install Starship."
+        fi
     fi
 else
     warn "⚠️  Skipping Starship installation because curl is unavailable."
 fi
 
-echo "Linking dotfiles..."
+info "Linking dotfiles..."
 for EACH in "${SCRIPTPATH}"/dotfiles/*; do
     if [[ -f "${EACH}" ]]; then
-        ln -svf "${EACH}" ~/".$(basename "${EACH}")"
+        ln -sf "${EACH}" ~/".$(basename "${EACH}")"
     fi
 done
 
-echo "Linking local binaries..."
-ln -svf "${SCRIPTPATH}/kubeseal-interactive" "${HOME}/.local/bin/kubeseal-interactive"
+info "Linking local binaries..."
+ln -sf "${SCRIPTPATH}/kubeseal-interactive" "${HOME}/.local/bin/kubeseal-interactive"
 
 echo "Installing Oh-My-Tmux..."
 if has_cmd tmux; then
@@ -422,24 +465,30 @@ else
 fi
 
 if [[ -z "${IN_DEVCONTAINER}" ]] && [[ -d "${HOME}/.vim" ]]; then
-    echo "  Cleaning up existing vim configuration..."
+    echo "Cleaning up existing vim configuration..."
     rm -Rf "${HOME}/.vim/*"
 fi
 
 if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
     echo "Installing NeoBundle..."
     if has_cmd curl; then
-        sh -c "$(curl https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended || \
-            warn "⚠️  NeoBundle install script failed."
+        if [[ -n "${HAVE_GUM}" ]]; then
+            gum spin --show-error --title="Installing NeoBundle..." -- \
+                sh -c "$(curl -fsSL https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended || \
+                warn "⚠️  NeoBundle install script failed."
+        else
+            sh -c "$(curl -fsSL https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended \
+                >/dev/null 2>&1 || warn "⚠️  NeoBundle install script failed."
+        fi
     else
         warn "⚠️  curl is unavailable. Skipping NeoBundle installation."
     fi
 fi
 
-echo "Creating Python Virtual Environment..."
+info "Creating Python Virtual Environment..."
 if [[ -n "${HAVE_PYTHON_VENV}" ]]; then
-    if python3 -m venv "${HOME}/.venv"; then
-        "${HOME}"/.venv/bin/python3 -m pip install --upgrade habitipy || warn "⚠️  Failed to install habitipy in virtualenv."
+    if python3 -m venv "${HOME}/.venv" >/dev/null 2>&1; then
+        "${HOME}"/.venv/bin/python3 -m pip install -q --upgrade habitipy || warn "⚠️  Failed to install habitipy in virtualenv."
     else
         warn "⚠️  Failed to create Python virtual environment."
     fi
@@ -454,22 +503,22 @@ if [[ -L "${HOME}/.oh-my-zsh/custom/themes/powerlevel10k" ]]; then
     rm -f "${HOME}/.oh-my-zsh/custom/themes/powerlevel10k"
 fi
 
-echo "Linking files..."
+info "Linking files..."
 if [[ -n "${HAVE_ZSH}" ]]; then
     touch "${HOME}/.zsh_history"
-    ln -svf "${SCRIPTPATH}/zshrc" ~/.zshrc
+    ln -sf "${SCRIPTPATH}/zshrc" ~/.zshrc
 fi
 
 touch "${HOME}/.bash_history"
-ln -svf "${SCRIPTPATH}/bashrc" ~/.bashrc
+ln -sf "${SCRIPTPATH}/bashrc" ~/.bashrc
 
 mkdir -p "${HOME}/.config"
-ln -svf "${SCRIPTPATH}/starship.toml" "${HOME}/.config/starship.toml"
+ln -sf "${SCRIPTPATH}/starship.toml" "${HOME}/.config/starship.toml"
 
 if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
-    ln -svf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
-    ln -svf "${SCRIPTPATH}/vim/vimrc.local" ~/.vimrc.local
-    ln -svf "${SCRIPTPATH}/vim/vimrc.local.bundles" ~/.vimrc.local.bundles
+    ln -sf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
+    ln -sf "${SCRIPTPATH}/vim/vimrc.local" ~/.vimrc.local
+    ln -sf "${SCRIPTPATH}/vim/vimrc.local.bundles" ~/.vimrc.local.bundles
 fi
 
 if [[ -n "${HAVE_ZSH}" ]]; then
@@ -477,10 +526,10 @@ if [[ -n "${HAVE_ZSH}" ]]; then
     if [[ -d "${SCRIPTPATH}/oh-my-zsh/plugins" ]] && [[ -d "${SCRIPTPATH}/oh-my-zsh/themes" ]]; then
         if [[ -d "${HOME}/.oh-my-zsh/custom" ]]; then
             for PLUGIN in "${SCRIPTPATH}"/oh-my-zsh/plugins/*; do
-                ln -svf "${PLUGIN}" ~/.oh-my-zsh/custom/plugins/"$(basename "${PLUGIN}")"
+                ln -sf "${PLUGIN}" ~/.oh-my-zsh/custom/plugins/"$(basename "${PLUGIN}")"
             done
             for THEME in "${SCRIPTPATH}"/oh-my-zsh/themes/*; do
-                ln -svf "${THEME}" ~/.oh-my-zsh/custom/themes/"$(basename "${THEME}")"
+                ln -sf "${THEME}" ~/.oh-my-zsh/custom/themes/"$(basename "${THEME}")"
             done
         else
             warn "⚠️  ~/.oh-my-zsh/custom is missing. Skipping custom plugin/theme linking."
@@ -493,7 +542,13 @@ fi
 if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
     echo "Installing all NeoBundles..."
     if [[ -x "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" ]]; then
-        "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" || warn "⚠️  NeoBundle installation step failed."
+        if [[ -n "${HAVE_GUM}" ]]; then
+            gum spin --show-error --title="Installing NeoBundle packages..." -- \
+                "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" || warn "⚠️  NeoBundle installation step failed."
+        else
+            "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" \
+                >/dev/null 2>&1 || warn "⚠️  NeoBundle installation step failed."
+        fi
     else
         warn "⚠️  neoinstall not found. Skipping NeoBundle package install."
     fi
