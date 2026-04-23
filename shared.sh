@@ -165,7 +165,7 @@ case "${DOTFILES_SHELL:-}" in
             eval "$(${HOME}/.local/bin/mcfly init bash)"
         fi
 
-        if dotfiles_has_cmd kubecolor; then
+        if dotfiles_has_cmd kubectl && dotfiles_has_cmd kubecolor; then
             kubectl() {
                 command kubecolor "$@"
             }
@@ -209,7 +209,7 @@ case "${DOTFILES_SHELL:-}" in
             . "${HOME}/.zsh-aliases"
         fi
 
-        if dotfiles_has_cmd kubecolor; then
+        if dotfiles_has_cmd kubectl && dotfiles_has_cmd kubecolor; then
             kubectl() {
                 command kubecolor "$@"
             }
