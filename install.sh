@@ -350,7 +350,7 @@ ln -svf "${SCRIPTPATH}/kubeseal-interactive" "${HOME}/.local/bin/kubeseal-intera
 echo "Installing Oh-My-Tmux..."
 if has_cmd tmux; then
     if [[ -f "$(pwd)/oh-my-tmux/.tmux.conf" ]]; then
-        ln -s "$(pwd)"/oh-my-tmux/.tmux.conf "${HOME}/.tmux.conf" || warn "⚠️  Failed to link .tmux.conf"
+        ln -sf "$(pwd)"/oh-my-tmux/.tmux.conf "${HOME}/.tmux.conf" || warn "⚠️  Failed to link .tmux.conf"
     else
         warn "⚠️  Skipping Oh-My-Tmux setup because submodule files are missing."
     fi
@@ -360,7 +360,10 @@ fi
 
 if [[ -n "${HAVE_ZSH}" ]]; then
     echo "Installing Oh-My-ZSH..."
-    if has_cmd curl; then
+    if [[ -d "${HOME}/.oh-my-zsh" ]] && [[ -n "${ZSH_VERSION}" ]] && has_cmd omz; then
+        info "Oh-My-ZSH already installed. Running update..."
+        omz update || warn "⚠️  Oh-My-ZSH update failed."
+    elif has_cmd curl; then
         sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || \
             warn "⚠️  Oh-My-ZSH installation failed."
     else
