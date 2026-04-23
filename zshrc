@@ -25,10 +25,16 @@ ZSH_THEME=""
 HYPHEN_INSENSITIVE="true"
 COMPLETION_WAITING_DOTS="true"
 
-plugins=(k genpass gitfast kubetail colored-man-pages colorize docker helm ubuntu vagrant zsh-autosuggestions zsh-syntax-highlighting zsh-github-copilot)
+plugins=(k genpass gitfast kubetail colored-man-pages colorize docker helm ubuntu vagrant zsh-autosuggestions zsh-syntax-highlighting)
 
 if which thefuck &>/dev/null; then
 	plugins+=(thefuck)
+fi
+
+if command -v gh &>/dev/null \
+	&& gh auth status &>/dev/null 2>&1 \
+	&& gh extension list 2>/dev/null | grep -q 'github/gh-copilot'; then
+	plugins+=(zsh-github-copilot)
 fi
 
 dotfiles_load_oh_my_zsh() {
