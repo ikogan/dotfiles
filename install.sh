@@ -346,6 +346,13 @@ else
     warn "⚠️  gh is unavailable. Skipping GitHub CLI Copilot extension installation."
 fi
 
+download_latest_release "grafana/mcp-grafana" "mcp-grafana" "tar.gz" || exit 1
+extract_download "mcp-grafana" "tar.gz" || exit 1
+install --mode=0755 "${TEMP_DIR}/mcp-grafana" "$HOME/.local/bin/mcp-grafana" || exit 1
+info "🎉 Successfully installed mcp-grafana!"
+warn "⚠️  Remember to add GRAFANA_API_KEY to ~/.copilot/mcp-config.json"
+warn "   Generate it at: https://metrics.gaea.mythicnet.org → Administration → Service Accounts → Add service account token"
+
 if [[ "$(uname -o)" = "Android" ]]; then
     info "Krew seems to blow up on Android, skipping."
 else
@@ -488,7 +495,7 @@ fi
 info "Creating Python Virtual Environment..."
 if [[ -n "${HAVE_PYTHON_VENV}" ]]; then
     if python3 -m venv "${HOME}/.venv" >/dev/null 2>&1; then
-        "${HOME}"/.venv/bin/python3 -m pip install -q --upgrade habitipy || warn "⚠️  Failed to install habitipy in virtualenv."
+        "${HOME}"/.venv/bin/python3 -m pip install -q --upgrade kubectl-mcp-server || warn "⚠️  Failed to install kubectl-mcp-server in virtualenv."
     else
         warn "⚠️  Failed to create Python virtual environment."
     fi
