@@ -4,36 +4,37 @@ add_newline = false
 
 # Powerline-like prompt with segment backgrounds and separators.
 format = """
-[](fg:#6C6C6C)$os$username$hostname$directory$git_branch$git_status$status(fg:#6C6C6C)$character
+[](fg:#D500F9)$os[](fg:#D500F9 bg:#FF4081)$username[](fg:#FF4081 bg:#FF8A65)$hostname[](fg:#FF8A65 bg:#4FC3F7)$directory[](fg:#4FC3F7 bg:#FFD600)$git_branch$git_status$status$character
 """
 
 right_format = """
-[](fg:#6C6C6C)$kubernetes$python$nodejs$golang$cmd_duration[](fg:#6C6C6C)
+[](fg:#80CBC4)$kubernetes[](fg:#6FB1D5 bg:#80CBC4)$python[](fg:#00C853 bg:#6FB1D5)$nodejs[](fg:#2A9D8F bg:#00C853)$golang[](fg:#304FFE bg:#2A9D8F)$cmd_duration[](fg:#304FFE)
 """
 
 [os]
-style = "bg:#6C6C6C fg:#1E1E1E"
+style = "bg:#D500F9 fg:#F8F8F2"
 disabled = false
+format = "[ $symbol ]($style)"
 
 [username]
 show_always = false
-style_user = "bg:#6C6C6C fg:#1E1E1E bold"
-style_root = "bg:#6C6C6C fg:#1E1E1E bold"
-format = "[$user ]($style)"
+style_user = "bg:#FF4081 fg:#F8F8F2 bold"
+style_root = "bg:#FF4081 fg:#F8F8F2 bold"
+format = "[ $user ]($style)"
 
 [hostname]
 ssh_symbol = " "
 ssh_only = true
-style = "bg:#5F87AF fg:#1E1E1E bold"
-format = "[](fg:#6C6C6C bg:#5F87AF)[ $hostname ]($style)"
+style = "bg:#FF8A65 fg:#101010 bold"
+format = "[ $hostname ]($style)"
 
 [directory]
 read_only = " 󰌾"
-style = "bg:#3A6EA5 fg:#F8F8F2 bold"
+style = "bg:#4FC3F7 fg:#101010 bold"
 truncation_length = 2
 truncation_symbol = "…/"
 truncate_to_repo = false
-format = "[](fg:#5F87AF bg:#3A6EA5)[ $path ]($style)"
+format = "[ $path ]($style)"
 
 [directory.substitutions]
 "Documents" = "󰈙 "
@@ -44,55 +45,55 @@ format = "[](fg:#5F87AF bg:#3A6EA5)[ $path ]($style)"
 [time]
 disabled = false
 time_format = "%R" # Hour:Minute Format
-style = "bg:#33658A"
+style = "bg:#304FFE"
 format = '[ ♥ $time ]($style)'
 
 [git_branch]
 symbol = ""
-style = "bg:#2D9D78 fg:#101010 bold"
-format = "[](fg:#3A6EA5 bg:#2D9D78)[ $symbol $branch]($style)"
+style = "bg:#FFD600 fg:#101010 bold"
+format = "[ $symbol $branch]($style)"
 
 [git_status]
-style = "bg:#2D9D78 fg:#101010"
+style = "bg:#FFD600 fg:#101010"
 format = "[$all_status$ahead_behind ]($style)"
 
 [kubernetes]
 disabled = false
 symbol = "󱃾"
-style = "bg:#3B82F6 fg:#101010 bold"
-format = "(fg:#2D9D78 bg:#3B82F6)[ $symbol $context( ($namespace)) ]($style)"
+style = "bg:#80CBC4 fg:#101010 bold"
+format = "[ $symbol $context( ($namespace)) ]($style)"
 
 [python]
 symbol = " "
-style = "bg:#DFAF00 fg:#101010 bold"
-format = "[](fg:#3B82F6 bg:#DFAF00)[ $symbol $virtualenv ]($style)"
+style = "bg:#6FB1D5 fg:#101010 bold"
+format = "[ $symbol $virtualenv ]($style)"
 detect_files = [".python-version", "requirements.txt", "pyproject.toml", "Pipfile"]
 
 [nodejs]
-symbol = " "
-style = "bg:#80A94B fg:#101010 bold"
-format = "[](fg:#DFAF00 bg:#80A94B)[ $symbol $version ]($style)"
+symbol = ""
+style = "bg:#00C853 fg:#F8F8F2 bold"
+format = "[ $symbol$version ]($style)"
 
 [golang]
-symbol = " "
-style = "bg:#00ADD8 fg:#101010 bold"
-format = "[](fg:#80A94B bg:#00ADD8)[ $symbol $version ]($style)"
+symbol = ""
+style = "bg:#2A9D8F fg:#F8F8F2 bold"
+format = "[ $symbol$version ]($style)"
 
 [cmd_duration]
 min_time = 1000
-style = "bg:#805AD5 fg:#F8F8F2"
-format = "[](fg:#00ADD8 bg:#805AD5)[ took $duration ]($style)"
+style = "bg:#304FFE fg:#F8F8F2"
+format = "[ took $duration ]($style)"
 
 [status]
 disabled = false
 symbol = " "
-style = "bg:#C53030 fg:#F8F8F2 bold"
-format = "[](fg:#805AD5 bg:#C53030)[ ✗ $status ]($style)"
+style = "bg:#FF4081 fg:#F8F8F2 bold"
+format = "[](fg:#FFD600 bg:#FF4081)[ ✗ $status ]($style)"
 
 [character]
-success_symbol = "[](fg:#6C6C6C)"
-error_symbol = "[](bold red)"
-vimcmd_symbol = "[](bold yellow)"
+success_symbol = "[](fg:#FFD600)"
+error_symbol = "[](fg:#FF4081)"
+vimcmd_symbol = "[](fg:#FFD600)"
 
 [aws]
 symbol = " "
