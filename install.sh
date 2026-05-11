@@ -1,7 +1,7 @@
 #!/bin/bash
 SCRIPTPATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 HAVE_GUM=""
-TEMP_DIR=$(mktemp -d)
+TEMP_DIR=""
 PATH="${HOME}"/.local/bin:"${PATH}"
 
 has_cmd() {
@@ -219,12 +219,8 @@ setup_temp_dir() {
         return 1
     fi
 
-    if [[ "$(uname -o)" = "Android" ]]; then
-        test -d "${HOME}/.tmp" || mkdir -p "${HOME}/.tmp"
-        candidate=$(mktemp -d "${HOME}/.tmp/dotfiles.XXXXX" 2>/dev/null)
-    else
-        candidate=$(mktemp -d /tmp/dotfiles.XXXXX 2>/dev/null)
-    fi
+    test -d "${HOME}/.tmp" || mkdir -p "${HOME}/.tmp"
+    candidate=$(mktemp -d "${HOME}/.tmp/dotfiles.XXXXX" 2>/dev/null)
 
     if [[ -z "${candidate}" ]] || [[ ! -d "${candidate}" ]]; then
         warn "⚠️  Could not create preferred temporary directory. Trying fallback in HOME."

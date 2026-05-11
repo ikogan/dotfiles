@@ -20,7 +20,8 @@ dotfiles_append_path() {
     esac
 }
 
-if [[ -f "${HOME}/.dotfilesrc" ]]; then
+if [[ -z "${DOTFILES_USER_RC_LOADED:-}" ]] && [[ -f "${HOME}/.dotfilesrc" ]]; then
+    DOTFILES_USER_RC_LOADED=1
     . "${HOME}/.dotfilesrc"
 fi
 

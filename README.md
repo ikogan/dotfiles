@@ -19,4 +19,9 @@ change between hosts, like:
 KUBERNETES_DIAGNOSTIC_IMAGE=
 KUBERNETES_DIAGNOSTIC_SECRET=
 SALT_GIT_ROOT_LOCATIONS=("${HOME}/Documents/Code/salt" "${HOME}/Documents/Code/some-other-place")
+DOTFILES_AUTO_SWITCH_ZSH=1
 ```
+
+`DOTFILES_AUTO_SWITCH_ZSH=1` makes interactive bash sessions immediately `exec zsh` when zsh is available.
+
+`install.sh` uses `${HOME}/.tmp` for temp working directories, so it does not rely on `/tmp` being executable.
