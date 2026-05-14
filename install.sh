@@ -14,6 +14,11 @@ is_devcontainer() {
 
 pushd "${SCRIPTPATH}" &>/dev/null || exit
 
+if ! has_cmd curl; then
+    echo "❌ curl is required but not installed. Aborting." >&2
+    exit 1
+fi
+
 if has_cmd git; then
     git submodule update --recursive --remote --init || \
         echo "⚠️  git is available, but submodule update failed. Submodule-dependent setup may be skipped."
@@ -90,11 +95,6 @@ download_latest_release() {
     local checksum_files=("checksums" "checksums.txt" "sha256sum" "sha256sum.txt")
     local checksum_url
     local binary_url
-
-    if ! has_cmd curl; then
-        warn "⚠️  Skipping ${binary_name}: curl is not available."
-        return 1
-    fi
 
     if [[ -n "${format}" ]]; then
         format=".$format"
@@ -316,6 +316,18 @@ else
 fi
 
 if [[ -n "${TEMP_DIR}" ]]; then
+    if download_latest_release "derailed/k9s" "k9s" "tar.gz" \
+        && extract_download "k9s" "tar.gz" \
+        && install --mode=0755 "${TEMP_DIR}/k9s" "$HOME/.local/bin/k9s"; then
+        info "🎉 Successfully installed k9s!"
+    else
+        warn "⚠️  Failed to install k9s."
+    fi
+else
+    warn "⚠️  Skipping k9s installation because temporary directory is unavailable."
+fi
+
+if [[ -n "${TEMP_DIR}" ]]; then
     if download_latest_release "cli/cli" "gh" "tar.gz" \
         && extract_download "gh" "tar.gz" \
         && install --mode=0755 "${TEMP_DIR}"/gh_*/bin/gh "${HOME}/.local/bin/gh"; then
@@ -396,24 +408,20 @@ else
     fi
 fi
 
-if has_cmd curl; then
-    if [[ -n "${HAVE_GUM}" ]]; then
-        if gum spin --show-error --title="Installing Starship..." -- \
-            bash -c "curl -fsSL https://starship.rs/install.sh | sh -s -- --bin-dir '${HOME}/.local/bin' --yes"; then
-            info "🎉 Successfully installed Starship!"
-        else
-            warn "⚠️  Failed to install Starship."
-        fi
+if [[ -n "${HAVE_GUM}" ]]; then
+    if gum spin --show-error --title="Installing Starship..." -- \
+        bash -c "curl -fsSL https://starship.rs/install.sh | sh -s -- --bin-dir '${HOME}/.local/bin' --yes"; then
+        info "🎉 Successfully installed Starship!"
     else
-        info "Installing Starship..."
-        if curl -fsSL https://starship.rs/install.sh | sh -s -- --bin-dir "${HOME}/.local/bin" --yes >/dev/null 2>&1; then
-            info "🎉 Successfully installed Starship!"
-        else
-            warn "⚠️  Failed to install Starship."
-        fi
+        warn "⚠️  Failed to install Starship."
     fi
 else
-    warn "⚠️  Skipping Starship installation because curl is unavailable."
+    info "Installing Starship..."
+    if curl -fsSL https://starship.rs/install.sh | sh -s -- --bin-dir "${HOME}/.local/bin" --yes >/dev/null 2>&1; then
+        info "🎉 Successfully installed Starship!"
+    else
+        warn "⚠️  Failed to install Starship."
+    fi
 fi
 
 info "Linking dotfiles..."
@@ -448,12 +456,8 @@ if [[ -n "${HAVE_ZSH}" ]]; then
         fi
     else
         echo "Installing Oh-My-ZSH..."
-        if has_cmd curl; then
-            sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || \
-                warn "⚠️  Oh-My-ZSH installation failed."
-        else
-            warn "⚠️  curl is unavailable. Skipping Oh-My-ZSH installation."
-        fi
+        sh -c "$(RUNZSH=no curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || \
+            warn "⚠️  Oh-My-ZSH installation failed."
     fi
 fi
 
@@ -474,17 +478,13 @@ fi
 
 if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
     echo "Installing NeoBundle..."
-    if has_cmd curl; then
-        if [[ -n "${HAVE_GUM}" ]]; then
-            gum spin --show-error --title="Installing NeoBundle..." -- \
-                sh -c "$(curl -fsSL https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended || \
-                warn "⚠️  NeoBundle install script failed."
-        else
-            sh -c "$(curl -fsSL https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended \
-                >/dev/null 2>&1 || warn "⚠️  NeoBundle install script failed."
-        fi
+    if [[ -n "${HAVE_GUM}" ]]; then
+        gum spin --show-error --title="Installing NeoBundle..." -- \
+            sh -c "$(curl -fsSL https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended || \
+            warn "⚠️  NeoBundle install script failed."
     else
-        warn "⚠️  curl is unavailable. Skipping NeoBundle installation."
+        sh -c "$(curl -fsSL https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended \
+            >/dev/null 2>&1 || warn "⚠️  NeoBundle install script failed."
     fi
 fi
 
