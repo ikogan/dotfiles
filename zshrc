@@ -15,7 +15,7 @@ dotfiles_resolve_path() {
 export DOTFILES_SHELL='zsh'
 DOTFILES_ZSHRC_PATH="$(dotfiles_resolve_path "${(%):-%N}")"
 DOTFILES_ROOT="$(cd -- "$(dirname -- "${DOTFILES_ZSHRC_PATH}")" >/dev/null 2>&1 && pwd -P)"
-source "${DOTFILES_ROOT}/shared.sh"
+source "${DOTFILES_ROOT}/shared-core.sh"
 
 export ZSH_2000_DISABLE_RVM='true'
 export ZSH="${HOME}/.oh-my-zsh"
@@ -101,3 +101,7 @@ bindkey '^l' _my_clear
 #bindkey '\C-i' zsh_gh_copilot_suggest
 # TODO: Figure out how to bind explain ,the below doesn't wokr.
 # bindkey '\C-S-i' zsh_gh_copilot_explain
+
+# Load interactive shell features after oh-my-zsh
+source "${DOTFILES_ROOT}/shared-interactive.sh"
+
