@@ -30,22 +30,5 @@ if [[ "${DOTFILES_AUTO_SWITCH_ZSH:-0}" = "1" ]] \
     exec zsh
 fi
 
-. "${DOTFILES_ROOT}/shared.sh"
-
-# Bash-it (oh-my-zsh-like framework for bash).
-export BASH_IT="${HOME}/.bash_it"
-if [[ -f "${BASH_IT}/bash_it.sh" ]]; then
-    export BASH_IT_THEME='none'
-    export BASH_IT_SHOW_CLOCK=false
-    export BASH_IT_USE_FZF=false
-
-    # Keep this close to the zsh setup while avoiding hard failures if plugins are missing.
-    # shellcheck disable=SC2034
-    plugins=(git kubectl docker)
-    # shellcheck disable=SC2034
-    aliases=(general git docker kubectl tmux vim)
-    # shellcheck disable=SC2034
-    completions=(git kubectl docker pip ssh tmux)
-
-    source "${BASH_IT}/bash_it.sh"
-fi
+. "${DOTFILES_ROOT}/shared-core.sh"
+. "${DOTFILES_ROOT}/shared-interactive.sh"
