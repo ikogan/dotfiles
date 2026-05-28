@@ -25,7 +25,7 @@ ZSH_THEME=""
 HYPHEN_INSENSITIVE="true"
 COMPLETION_WAITING_DOTS="true"
 
-plugins=(k genpass gitfast kubetail colored-man-pages colorize docker helm ubuntu vagrant zsh-autosuggestions zsh-syntax-highlighting)
+plugins=(k colored-man-pages genpass gitfast kubetail colored-man-pages colorize skaffold docker helm ubuntu vagrant zsh-autosuggestions zsh-syntax-highlighting)
 
 if which thefuck &>/dev/null; then
 	plugins+=(thefuck)
