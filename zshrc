@@ -105,3 +105,25 @@ bindkey '^l' _my_clear
 # Load interactive shell features after oh-my-zsh
 source "${DOTFILES_ROOT}/shared-interactive.sh"
 
+set_transient_prompt() {
+  # Save the original prompt structure
+  if [[ -z "$ORIG_PROMPT" ]]; then
+    ORIG_PROMPT="$PROMPT"
+  fi
+
+  # When executing a command, replace the visual prompt with a clean character
+  function zle-line-finish() {
+    PROMPT='%F{green}❯%f '
+    zle reset-prompt
+  }
+  zle -N zle-line-finish
+
+  # Restore the full Starship powerline prompt for the active line
+  function zle-line-init() {
+    PROMPT="$ORIG_PROMPT"
+    zle reset-prompt
+  }
+  zle -N zle-line-init
+}
+set_transient_prompt
+
