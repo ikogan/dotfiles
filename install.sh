@@ -431,8 +431,14 @@ for EACH in "${SCRIPTPATH}"/dotfiles/*; do
     fi
 done
 
-info "Linking local binaries..."
+info "Linking local binaries and scripts..."
 ln -sf "${SCRIPTPATH}/kubeseal-interactive" "${HOME}/.local/bin/kubeseal-interactive"
+
+for EACH in "${SCRIPTPATH}"/scripts/*; do
+    if [[ -f "${EACH}" ]]; then
+        ln -sf "${EACH}" ~/.local/bin/"$(basename "${EACH%.*}")"
+    fi
+done
 
 echo "Installing Oh-My-Tmux..."
 if has_cmd tmux; then
