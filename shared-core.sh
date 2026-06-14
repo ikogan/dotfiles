@@ -114,10 +114,6 @@ if [[ -d "${HOME}/.config/Code/User/globalStorage/ms-vscode-remote.remote-contai
     dotfiles_append_path "${HOME}/.config/Code/User/globalStorage/ms-vscode-remote.remote-containers/cli-bin"
 fi
 
-if [[ -d "${HOME}/Documents/Code/salt" ]]; then
-    . "${HOME}/Documents/Code/salt/bootstrap/bashrc.sh"
-fi
-
 if [[ -f "${HOME}/.tmuxinator/aliases" ]]; then
     . "${HOME}/.tmuxinator/aliases"
 fi
