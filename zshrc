@@ -109,11 +109,13 @@ set_transient_prompt() {
   # Save the original prompt structure
   if [[ -z "$ORIG_PROMPT" ]]; then
     ORIG_PROMPT="$PROMPT"
+    ORIG_RPROMPT="$RPROMPT"
   fi
 
   # When executing a command, replace the visual prompt with a clean character
   function zle-line-finish() {
     PROMPT='%F{green}❯%f '
+    RPROMPT=''
     zle reset-prompt
   }
   zle -N zle-line-finish
@@ -121,6 +123,7 @@ set_transient_prompt() {
   # Restore the full Starship powerline prompt for the active line
   function zle-line-init() {
     PROMPT="$ORIG_PROMPT"
+    RPROMPT="$ORIG_RPROMPT"
     zle reset-prompt
   }
   zle -N zle-line-init
