@@ -4,6 +4,21 @@
 
 KUBESEAL_ARGS=(--controller-name=sealed-secrets --controller-namespace=sealed-secrets)
 
+# Context selection
+printf "Context: " >&2
+read -r context
+if [[ -z "$context" ]]; then
+    echo "Error: context is required." >&2
+    exit 1
+fi
+
+if ! kubectl config get-contexts -o name | grep -q '^'"$context"'$'; then
+    echo "Error: context $context is not configured." >&2
+    exit 1
+fi
+
+KUBESEAL_ARGS+=(--context "$context")
+
 # Scope selection
 echo "Select scope:" >&2
 echo "  1) Cluster-Wide" >&2
