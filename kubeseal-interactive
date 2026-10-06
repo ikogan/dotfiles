@@ -67,4 +67,11 @@ value="$(cat)"
 value="${value#"${value%%[![:space:]]*}"}"
 value="${value%"${value##*[![:space:]]}"}"
 
-printf '%s' "$value" | command kubeseal --raw "${KUBESEAL_ARGS[@]}" "$@"
+encrypted="$(printf '%s' "$value" | command kubeseal --raw "${KUBESEAL_ARGS[@]}" "$@")"
+
+echo "${encrypted}"
+
+if command -v wl-copy &>/dev/null; then
+    echo "Copied to the clipboard."
+    wl-copy "${encrypted}"
+fi

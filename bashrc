@@ -32,3 +32,4 @@ fi
 
 . "${DOTFILES_ROOT}/shared-core.sh"
 . "${DOTFILES_ROOT}/shared-interactive.sh"
+. "$HOME/.cargo/env"
