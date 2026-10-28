@@ -64,6 +64,16 @@ fi
 
 export PATH="${NPM_PACKAGES}/bin:${PATH}"
 
+NVM_INIT="/usr/share/nvm/init-nvm.sh"
+
+if [[ -f "${NVM_INIT}" ]]; then
+    source "${NVM_INIT}"
+fi
+
+if [[ -d "${HOME}/.cargo/bin" ]]; then
+    export PATH="${HOME}/.cargo/bin:${PATH}"
+fi
+
 if dotfiles_has_cmd manpath; then
     unset MANPATH
     manpath_value="$(manpath)"
@@ -132,6 +142,10 @@ if [[ -n "${KUBERNETES_DIAGNOSTIC_IMAGE:-}" ]] && [[ -n "${KUBERNETES_DIAGNOSTIC
     fi
 fi
 
+if [[ -f /run/user/$(id -u)/podman/podman.sock ]]; then
+  export DOCKER_HOST=unix://run/user/$(id -u)/podman/podman.sock
+fi
+
 alias git-fuck='git add . && git commit --amend --no-edit -a && git push --force'
 alias kubeseal='kubeseal-interactive'
 
@@ -147,6 +161,3 @@ if dotfiles_has_cmd highlight; then
     }
 fi
 
-export NVM_DIR="${HOME}/.nvm"
-[ -s "${NVM_DIR}/nvm.sh" ] && . "${NVM_DIR}/nvm.sh"
-[ -s "${NVM_DIR}/bash_completion" ] && . "${NVM_DIR}/bash_completion"

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec lua5.4 /usr/local/lib/luacheck-main.lua "$@"
