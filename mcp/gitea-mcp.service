@@ -1,0 +1,22 @@
+[Unit]
+Description=Gitea MCP Server
+Documentation=https://gitea.com/gitea/gitea-mcp
+After=network-online.target
+
+[Service]
+Type=simple
+# secret-tool needs the session bus to read the token from the keyring.
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+# "localhost" below is translated to the docker router IP by setup-mcp so the
+# server is reachable from containers. NOTE: the server itself does not
+# authenticate clients; it uses the Gitea token from the keyring for every
+# request, so anything that can reach the port can act as that Gitea user.
+ExecStart=%h/.local/bin/gitea-mcp-run -t http -b localhost -p 8380
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gitea-mcp
+
+[Install]
+WantedBy=default.target

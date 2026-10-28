@@ -25,7 +25,7 @@ ZSH_THEME=""
 HYPHEN_INSENSITIVE="true"
 COMPLETION_WAITING_DOTS="true"
 
-plugins=(k colored-man-pages genpass gitfast kubetail colored-man-pages colorize skaffold docker helm ubuntu vagrant zsh-autosuggestions zsh-syntax-highlighting)
+plugins=(colored-man-pages genpass gitfast colored-man-pages colorize skaffold docker helm ubuntu vagrant zsh-autosuggestions zsh-syntax-highlighting)
 
 if which thefuck &>/dev/null; then
 	plugins+=(thefuck)
@@ -97,6 +97,11 @@ function _my_clear() {
 }
 zle -N _my_clear
 
+bindkey '^[[H' beginning-of-line
+bindkey '^[[F' end-of-line
+# tmux sends Home/End as \E[1~ and \E[4~ (VT style)
+bindkey '^[[1~' beginning-of-line
+bindkey '^[[4~' end-of-line
 bindkey '^l' _my_clear
 #bindkey '\C-i' zsh_gh_copilot_suggest
 # TODO: Figure out how to bind explain ,the below doesn't wokr.
@@ -130,3 +135,5 @@ set_transient_prompt() {
 }
 set_transient_prompt
 
+
+export PATH="/home/kogan/.local/bin:$PATH"

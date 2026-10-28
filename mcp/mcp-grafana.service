@@ -1,0 +1,22 @@
+[Unit]
+Description=Grafana MCP Server
+Documentation=https://github.com/grafana/mcp-grafana
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/mcp/mcp-grafana.env
+# "localhost" below is translated to the docker router IP by setup-mcp so the
+# server is reachable from containers. NOTE: serving on a non-loopback address
+# without authentication means anything on that network can invoke MCP tools.
+# To require a bearer token, add a --server-auth-token flag (or set
+# MCP_GRAFANA_SERVER_TOKEN) and send it from clients as an Authorization header.
+ExecStart=%h/.local/bin/mcp-grafana -transport streamable-http -address localhost:8280
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-grafana
+
+[Install]
+WantedBy=default.target
