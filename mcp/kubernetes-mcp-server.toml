@@ -1,0 +1,14 @@
+# setup-mcp rewrites bind_address to the docker router IP so the server is
+# reachable from containers on the bridge network.
+bind_address = "localhost"
+port = "8180"
+
+[http]
+read_only = true
+toolsets = ["core", "config", "helm", "observability/metrics", "observability/logs"]
+
+[[denied_resources]]
+group = ""
+version = "v1"
+kind = "Secret"
+

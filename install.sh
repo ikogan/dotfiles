@@ -4,6 +4,11 @@ HAVE_GUM=""
 TEMP_DIR=""
 PATH="${HOME}"/.local/bin:"${PATH}"
 
+if [[ "${SHELL}" = "/bin/fish" ]] || [[ "${SHELL}" = "/usr/bin/fish" ]]; then
+    echo "The fish shell is not supported, change your shell to zsh." 1>&2
+    exit 1
+fi
+
 has_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -358,6 +363,53 @@ download_latest_release "grafana/mcp-grafana" "mcp-grafana" "tar.gz" || exit 1
 extract_download "mcp-grafana" "tar.gz" || exit 1
 install --mode=0755 "${TEMP_DIR}/mcp-grafana" "$HOME/.local/bin/mcp-grafana" || exit 1
 info "🎉 Successfully installed mcp-grafana!"
+
+if [[ -n "${TEMP_DIR}" ]]; then
+    if download_latest_release "containers/kubernetes-mcp-server" "kubernetes-mcp-server" "" \
+        && install --mode=0755 "${TEMP_DIR}/kubernetes-mcp-server" "$HOME/.local/bin/kubernetes-mcp-server"; then
+        info "🎉 Successfully installed kubernetes-mcp-server!"
+    else
+        warn "⚠️  Failed to install kubernetes-mcp-server."
+    fi
+else
+    warn "⚠️  Skipping kubernetes-mcp-server installation because temporary directory is unavailable."
+fi
+
+# gitea-mcp is released on gitea.com rather than GitHub; verify against the
+# release checksums before installing.
+install_gitea_mcp() {
+    local tag version arch asset base
+    tag="$(curl -fsSL https://gitea.com/api/v1/repos/gitea/gitea-mcp/releases/latest \
+        | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)" || return 1
+    [[ -n "$tag" ]] || return 1
+    version="${tag#v}"
+    case "$(uname -m)" in
+        x86_64) arch="x86_64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *) return 1 ;;
+    esac
+    asset="gitea-mcp_Linux_${arch}.tar.gz"
+    base="https://gitea.com/gitea/gitea-mcp/releases/download/${tag}"
+    curl -fsSL -o "${TEMP_DIR}/${asset}" "${base}/${asset}" \
+        && curl -fsSL -o "${TEMP_DIR}/gitea-mcp_${version}_checksums.txt" "${base}/gitea-mcp_${version}_checksums.txt" \
+        && (cd "${TEMP_DIR}" && grep " ${asset}\$" "gitea-mcp_${version}_checksums.txt" | sha256sum -c --quiet -) \
+        && tar -xzf "${TEMP_DIR}/${asset}" -C "${TEMP_DIR}" gitea-mcp \
+        && install --mode=0755 "${TEMP_DIR}/gitea-mcp" "$HOME/.local/bin/gitea-mcp"
+}
+
+if [[ -n "${TEMP_DIR}" ]]; then
+    if install_gitea_mcp; then
+        info "🎉 Successfully installed gitea-mcp!"
+    else
+        warn "⚠️  Failed to install gitea-mcp."
+    fi
+else
+    warn "⚠️  Skipping gitea-mcp installation because temporary directory is unavailable."
+fi
+
+warn "⚠️  Remember to store the Gitea token for gitea-mcp in the keyring:"
+warn "   secret-tool store --label='gitea-mcp token' service gitea-mcp url https://git.gaea.mythicnet.org"
+
 warn "⚠️  Remember to add GRAFANA_API_KEY to ~/.copilot/mcp-config.json"
 warn "   Generate it at: https://metrics.gaea.mythicnet.org → Administration → Service Accounts → Add service account token"
 
@@ -496,9 +548,7 @@ fi
 
 info "Creating Python Virtual Environment..."
 if [[ -n "${HAVE_PYTHON_VENV}" ]]; then
-    if python3 -m venv "${HOME}/.venv" >/dev/null 2>&1; then
-        "${HOME}"/.venv/bin/python3 -m pip install -q --upgrade kubectl-mcp-server || warn "⚠️  Failed to install kubectl-mcp-server in virtualenv."
-    else
+    if ! python3 -m venv "${HOME}/.venv" >/dev/null 2>&1; then
         warn "⚠️  Failed to create Python virtual environment."
     fi
 else
@@ -522,7 +572,7 @@ touch "${HOME}/.bash_history"
 ln -sf "${SCRIPTPATH}/bashrc" ~/.bashrc
 
 mkdir -p "${HOME}/.config"
-ln -sf "${SCRIPTPATH}/starship.toml" "${HOME}/.config/starship.toml"
+bash "${SCRIPTPATH}/scripts/render-starship.sh"
 
 if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
     ln -sf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
@@ -552,8 +602,10 @@ if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
     echo "Installing all NeoBundles..."
     if [[ -x "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" ]]; then
         if [[ -n "${HAVE_GUM}" ]]; then
+            set +e
             gum spin --show-error --title="Installing NeoBundle packages..." -- \
                 "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" || warn "⚠️  NeoBundle installation step failed."
+            set -e
         else
             "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" \
                 >/dev/null 2>&1 || warn "⚠️  NeoBundle installation step failed."
@@ -564,3 +616,19 @@ if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
 fi
 
 popd &>/dev/null || exit
+
+if [[ -x "${SCRIPTPATH}/scripts/setup-mcp.sh" ]]; then
+    info "Setting up MCP servers (systemd user units + OpenCode config)..."
+    "${SCRIPTPATH}/scripts/setup-mcp.sh" || warn "⚠️  MCP setup completed with warnings."
+fi
+
+if [[ -x "${SCRIPTPATH}/scripts/setup-lint.sh" ]]; then
+    info "Setting up linters (container-based)..."
+    "${SCRIPTPATH}/scripts/setup-lint.sh" || warn "⚠️  Linter setup completed with warnings."
+fi
+
+if has_cmd ufw; then
+    warn "⚠️  ufw detected: run '${SCRIPTPATH}/mcp/mcp-firewall.sh' to allow the MCP server ports (8180, 8280) from the docker bridge network only."
+fi
+
+echo "🎉 Successfully completed dotfiles installation!"

@@ -1,0 +1,16 @@
+[Unit]
+Description=Notify when kubernetes-mcp-server reports rejected Rancher credentials
+After=kubernetes-mcp-server.service
+
+[Service]
+Type=simple
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+ExecStart=%h/.local/bin/rancher-login-watch
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rancher-login-watch
+
+[Install]
+WantedBy=default.target
