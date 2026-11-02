@@ -308,6 +308,23 @@ else
     warn "⚠️  Skipping McFly installation because temporary directory is unavailable."
 fi
 
+TREE_SITTER_VERSION="v0.27.1"
+info "Installing tree-sitter ${TREE_SITTER_VERSION}..."
+case "$(uname -m)" in
+    x86_64) TREE_SITTER_ARCH="x64" ;;
+    aarch64|arm64) TREE_SITTER_ARCH="arm64" ;;
+    *) TREE_SITTER_ARCH="" ;;
+esac
+if [[ -n "${TREE_SITTER_ARCH}" ]] \
+    && curl -fsSL -o "${TEMP_DIR:-/tmp}/tree-sitter.gz" \
+        "https://github.com/tree-sitter/tree-sitter/releases/download/${TREE_SITTER_VERSION}/tree-sitter-linux-${TREE_SITTER_ARCH}.gz" \
+    && gunzip -f "${TEMP_DIR:-/tmp}/tree-sitter.gz" \
+    && install --mode=0755 "${TEMP_DIR:-/tmp}/tree-sitter" "${HOME}/.local/bin/tree-sitter"; then
+    info "🎉 Successfully installed tree-sitter!"
+else
+    warn "⚠️  Failed to install tree-sitter ${TREE_SITTER_VERSION}."
+fi
+
 if [[ -n "${TEMP_DIR}" ]]; then
     if download_latest_release "kubecolor/kubecolor" "kubecolor" "tar.gz" \
         && extract_download "kubecolor" "tar.gz" \
@@ -342,21 +359,6 @@ if [[ -n "${TEMP_DIR}" ]]; then
     fi
 else
     warn "⚠️  Skipping GitHub CLI (gh) installation because temporary directory is unavailable."
-fi
-
-if has_cmd gh; then
-    if gh extension list 2>/dev/null | grep -qE '(^|[[:space:]])github/gh-copilot([[:space:]]|$)'; then
-        info "ℹ️  GitHub CLI Copilot extension already installed."
-    else
-        info "Installing GitHub CLI Copilot extension..."
-        if gh extension install github/gh-copilot; then
-            info "🎉 Successfully installed GitHub CLI Copilot extension!"
-        else
-            warn "⚠️  Failed to install GitHub CLI Copilot extension."
-        fi
-    fi
-else
-    warn "⚠️  gh is unavailable. Skipping GitHub CLI Copilot extension installation."
 fi
 
 download_latest_release "grafana/mcp-grafana" "mcp-grafana" "tar.gz" || exit 1
@@ -529,27 +531,27 @@ else
     warn "⚠️  git is unavailable. Skipping Bash-it installation."
 fi
 
-if [[ -z "${IN_DEVCONTAINER}" ]] && [[ -d "${HOME}/.vim" ]]; then
-    echo "Cleaning up existing vim configuration..."
-    rm -Rf "${HOME}/.vim/*"
-fi
-
-if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
-    echo "Installing NeoBundle..."
-    if [[ -n "${HAVE_GUM}" ]]; then
-        gum spin --show-error --title="Installing NeoBundle..." -- \
-            sh -c "$(curl -fsSL https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended || \
-            warn "⚠️  NeoBundle install script failed."
-    else
-        sh -c "$(curl -fsSL https://raw.githubusercontent.com/Shougo/neobundle.vim/master/bin/install.sh)" "" --unattended \
-            >/dev/null 2>&1 || warn "⚠️  NeoBundle install script failed."
-    fi
+if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim && has_cmd git; then
+    echo "Installing Vim configuration (replacing any existing ~/.vim)..."
+    rm -Rf "${HOME}/.vim" "${HOME}/.vimrc" "${HOME}/.vimrc.local" "${HOME}/.vimrc.local.bundles"
+    mkdir -p "${HOME}/.vim/pack/plugins/start"
+    for VIM_PLUGIN in \
+        https://github.com/github/copilot.vim.git \
+        https://github.com/sheerun/vim-polyglot.git \
+        https://github.com/editorconfig/editorconfig-vim.git; do
+        git clone --depth=1 "${VIM_PLUGIN}" "${HOME}/.vim/pack/plugins/start/$(basename "${VIM_PLUGIN}" .git)" \
+            >/dev/null 2>&1 || warn "⚠️  Failed to clone Vim plugin ${VIM_PLUGIN}."
+    done
 fi
 
 info "Creating Python Virtual Environment..."
 if [[ -n "${HAVE_PYTHON_VENV}" ]]; then
     if ! python3 -m venv "${HOME}/.venv" >/dev/null 2>&1; then
         warn "⚠️  Failed to create Python virtual environment."
+    elif [[ -z "${IN_DEVCONTAINER}" ]]; then
+        info "Installing djlint into the Python virtual environment..."
+        "${HOME}/.venv/bin/pip" install --quiet --upgrade "djlint==1.49.2" \
+            || warn "⚠️  Failed to install djlint into ~/.venv."
     fi
 else
     warn "⚠️  Skipping Python virtual environment creation."
@@ -576,8 +578,11 @@ bash "${SCRIPTPATH}/scripts/render-starship.sh"
 
 if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
     ln -sf "${SCRIPTPATH}/vim/vimrc" ~/.vimrc
-    ln -sf "${SCRIPTPATH}/vim/vimrc.local" ~/.vimrc.local
-    ln -sf "${SCRIPTPATH}/vim/vimrc.local.bundles" ~/.vimrc.local.bundles
+fi
+
+if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd nvim; then
+    rm -Rf "${HOME}/.config/nvim"
+    ln -sfn "${SCRIPTPATH}/nvim" "${HOME}/.config/nvim"
 fi
 
 if [[ -n "${HAVE_ZSH}" ]]; then
@@ -598,20 +603,32 @@ if [[ -n "${HAVE_ZSH}" ]]; then
     fi
 fi
 
-if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim; then
-    echo "Installing all NeoBundles..."
-    if [[ -x "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" ]]; then
+if [[ -z "${IN_DEVCONTAINER}" ]]; then
+    if has_cmd nvim; then
+        nvim_version="$(nvim --version | head -n1 | sed -E 's/^NVIM v([0-9]+\.[0-9]+).*/\1/')"
+        if [[ "$(printf '%s\n' 0.11 "${nvim_version}" | sort -V | head -n1)" != "0.11" ]]; then
+            warn "⚠️  Neovim ${nvim_version:-unknown} is too old. Neovim 0.11 or newer is required."
+        fi
+
+        echo "Syncing Neovim plugins..."
         if [[ -n "${HAVE_GUM}" ]]; then
-            set +e
-            gum spin --show-error --title="Installing NeoBundle packages..." -- \
-                "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" || warn "⚠️  NeoBundle installation step failed."
-            set -e
+            gum spin --show-error --title="Syncing Neovim plugins..." -- \
+                nvim --headless "+Lazy! sync" +qa || warn "⚠️  Neovim plugin sync failed."
         else
-            "${HOME}/.vim/bundle/neobundle.vim/bin/neoinstall" \
-                >/dev/null 2>&1 || warn "⚠️  NeoBundle installation step failed."
+            nvim --headless "+Lazy! sync" +qa >/dev/null 2>&1 || warn "⚠️  Neovim plugin sync failed."
         fi
     else
-        warn "⚠️  neoinstall not found. Skipping NeoBundle package install."
+        warn "⚠️  nvim is not installed. Install Neovim 0.11 or newer for the Neovim config."
+    fi
+
+    for TOOL in rg fzf node tree-sitter stylua shfmt yamlfmt ruff djlint shellcheck; do
+        if ! has_cmd "${TOOL}"; then
+            warn "⚠️  ${TOOL} is not on PATH. Neovim needs it for search, formatting, parsing, or linting; install it with your package manager."
+        fi
+    done
+
+    if ! has_cmd cc && ! has_cmd gcc && ! has_cmd clang; then
+        warn "⚠️  No C compiler (cc, gcc, or clang) found. nvim-treesitter needs one to build parsers. Install build tools (base-devel on Arch, build-essential on Ubuntu)."
     fi
 fi
 

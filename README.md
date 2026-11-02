@@ -7,7 +7,8 @@
 Not using a dotfiles manager tool yet, this will setup:
 
 - zsh + oh-my-zsh
-- vim
+- Neovim (main editor, see [Editors](#editors))
+- Vim (basic fallback)
 - kubectl krew plugins
 
 **Note**: The install will overwrite existing configurations without prompting.
@@ -25,6 +26,88 @@ DOTFILES_AUTO_SWITCH_ZSH=1
 `DOTFILES_AUTO_SWITCH_ZSH=1` makes interactive bash sessions immediately `exec zsh` when zsh is available.
 
 `install.sh` uses `${HOME}/.tmp` for temp working directories, so it does not rely on `/tmp` being executable.
+
+## Editors
+
+- **Neovim** (`nvim/`, symlinked to `~/.config/nvim`) is the main editor. It
+  needs Neovim 0.11 or newer. Plugins are managed by
+  [lazy.nvim](https://github.com/folke/lazy.nvim) and pinned in
+  `nvim/lazy-lock.json`. Keymap hints come from which-key: press `,` and wait
+  for the menu. Progress and decisions are tracked in `TODO.md`.
+- **Vim** (`vim/vimrc`, symlinked to `~/.vimrc`) is a basic fallback with syntax
+  highlighting, Copilot, and EditorConfig. Its plugins are cloned into
+  `~/.vim/pack/plugins/start`. `install.sh` replaces `~/.vim` on every run.
+
+Both editors use 4-space indentation, with 2 spaces for YAML and tabs for
+Makefiles and Go. A project's `.editorconfig` always overrides these defaults.
+
+Neovim's file search and live grep need `rg` (ripgrep) and `fzf`. Copilot needs
+Node.js. Treesitter parsers are built with the `tree-sitter` CLI (v0.27.1,
+installed to `~/.local/bin` by `install.sh`) and a C compiler. `install.sh`
+warns about any of these, plus the formatters and linters (shellcheck, ruff,
+and others), that aren't on `PATH`. It installs djlint into `~/.venv`; the rest
+come from your package manager.
+
+### Neovim cheat sheet
+
+`,` is the leader key. Press `,` and wait a moment, and **which-key** shows the
+next keys you can press. Use `,f`, `,h`, `,d`, and `,c` to see their groups.
+
+| Keys | What it does | Plugin |
+|------|--------------|--------|
+| `,n` | Toggle the file tree (git status shown) | neo-tree |
+| `Tab` / `Shift-Tab` | Next / previous open buffer tab | bufferline |
+| `Shift-t` | New empty buffer tab | built-in |
+| `,c` | Close current buffer | built-in |
+| `,ff` | Find files | fzf-lua |
+| `,fg` | Live grep the project | fzf-lua |
+| `,fb` | Pick an open buffer | fzf-lua |
+| `,fr` | Recently opened files | fzf-lua |
+| `,fh` | Search help | fzf-lua |
+| `]c` / `[c` | Next / previous changed hunk | gitsigns |
+| `,hp` | Preview the changed lines (the diff) | gitsigns |
+| `,hs` / `,hr` | Stage / reset the hunk | gitsigns |
+| `,hb` | Blame the current line | gitsigns |
+| `,hd` | Diff the whole file against the index | gitsigns |
+| Click gutter | Preview the hunk under the click | gitsigns |
+| `:Git`, `:Gblame`, `:Gdiffsplit` | Git commands | vim-fugitive |
+| `s` | Jump to any visible text: press `s`, type letters, press the label | flash |
+| Select lines (visual), then `ga` and a delimiter such as `=` or `:` | Align text on a character | mini.align |
+| `,dd` | Show the diagnostic under the cursor | nvim-lint |
+| `,dl` | List diagnostics in the location list | nvim-lint |
+| `]d` / `[d` | Next / previous diagnostic | built-in |
+| `Tab` (insert mode) | Accept the Copilot suggestion, or insert a tab | copilot.lua |
+| `Alt-]` / `Alt-[` | Next / previous Copilot suggestion | copilot.lua |
+| `Ctrl-]` | Dismiss Copilot suggestion | copilot.lua |
+| `,cf` | Format the buffer | conform.nvim |
+| `:FormatToggle` | Turn format-on-save on or off | conform.nvim |
+| `,ig` | Toggle indent guides | indent-blankline |
+| `,e` | Open a file path relative to the current file | built-in |
+| `,.` | Change the working directory to the current file's folder | built-in |
+| `,h` / `,v` | Horizontal / vertical split | built-in |
+| `Ctrl-h/j/k/l` | Move between windows | built-in |
+| `,sh` | Open a terminal (`Esc Esc` leaves terminal mode) | built-in |
+| `,<space>` | Clear search highlighting | built-in |
+| Visual `J` / `K` | Move the selected lines down / up | built-in |
+
+Sessions are automatic. When you start `nvim` with no file arguments, the
+project's last session comes back (persistence.nvim). Opening a specific file
+skips the restore.
+
+### Other plugin notes
+
+- **molokai:** colorscheme.
+- **lualine:** statusline (branch, diff, diagnostics).
+- **bufferline:** the open buffers as tabs across the top. Clicking a tab switches to it.
+- **which-key:** keymap hints (see above).
+- **mini.pairs:** adds closing brackets and quotes as you type. Check how it handles closers if it gets in the way.
+- **mini.trailspace:** highlights trailing whitespace.
+- **editorconfig-vim:** applies a project's `.editorconfig`, which overrides these defaults.
+- **blink.cmp:** the completion menu for file paths, snippets, and open buffers.
+- **nvim-treesitter:** syntax highlighting and parsing for the listed languages.
+- **nvim-lint:** runs linters automatically when you open a file, save it, or leave insert mode. It uses shellcheck (shell), ruff (Python), luacheck (Lua), and hadolint (Dockerfile), and skips any that aren't installed. Problems show up as diagnostics, with `]d`/`[d` to jump between them.
+- **rainbow-delimiters:** colors matching brackets by depth.
+- **vim-fugitive:** Git commands, loaded when you run a `:G*` command.
 
 ## Agentic devcontainer workflow
 
