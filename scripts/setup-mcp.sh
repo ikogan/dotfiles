@@ -18,6 +18,8 @@
 # Usage:
 #   setup-mcp                 full install-time setup (configs, units, services)
 #   setup-mcp --translate-only  only rewrite the OpenCode MCP config (agent-dev)
+#   setup-mcp --rebind [--force]  re-translate to the current docker router IP
+#                             and restart changed services (all with --force)
 
 set -uo pipefail
 
@@ -28,7 +30,7 @@ has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 usage() {
   cat <<'EOF'
-usage: setup-mcp [--translate-only]
+usage: setup-mcp [--translate-only | --rebind [--force]]
 
 Sets up the MCP servers (kubernetes-mcp-server, mcp-grafana) as user-level
 systemd services and rewrites the OpenCode MCP config to connect to them over
@@ -36,6 +38,9 @@ the network (translating "localhost" to the docker router IP).
 
   --translate-only   Only rewrite the OpenCode MCP config; do not install
                      configs/units or touch the Grafana credentials.
+  --rebind           Re-translate configs and units to the current docker
+                     router IP; restart only the services that changed.
+  --force            With --rebind, restart every MCP service.
 EOF
 }
 
@@ -75,6 +80,30 @@ docker_router_ip() {
 translate_localhost() {
   local file="$1" router="$2"
   sed -i "s#localhost#${router}#g" "$file"
+}
+
+# Write SRC to DEST with "localhost" translated to the router IP. Returns 0 only
+# if DEST changed.
+sync_translated() {
+  local src="$1" dest="$2" router="$3" tmp
+  tmp="$(mktemp)"
+  sed "s#localhost#${router}#g" "$src" > "$tmp"
+  chmod 0644 "$tmp"
+  if cmp -s "$tmp" "$dest" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$dest"
+}
+
+# Wait up to a minute for the docker bridge to have an address.
+wait_for_docker_router() {
+  local _
+  for _ in $(seq 1 30); do
+    [[ "$(docker_router_ip)" != "127.0.0.1" ]] && return 0
+    sleep 2
+  done
+  return 1
 }
 
 # --- systemd helpers --------------------------------------------------------
@@ -183,16 +212,69 @@ PY
 
 # --- main -------------------------------------------------------------------
 
+# Re-translate the MCP configs and units to the current docker router IP, and
+# restart only what changed (or everything, with --force). Leaves the configs
+# alone if docker never comes up.
+rebind_services() {
+  local force="$1" router unit svc
+  local -a changed=() restart=()
+
+  if ! wait_for_docker_router; then
+    info "docker bridge is not up; leaving MCP configuration unchanged"
+    return 0
+  fi
+  router="$(docker_router_ip)"
+  mkdir -p "$CONFIG_DIR" "$SYSTEMD_DIR"
+
+  if sync_translated "$MCP_SRC/kubernetes-mcp-server.toml" "$CONFIG_DIR/kubernetes-mcp-server.toml" "$router"; then
+    restart+=(kubernetes-mcp-server)
+  fi
+  for unit in kubernetes-mcp-server mcp-grafana gitea-mcp rancher-login-watch; do
+    if sync_translated "$MCP_SRC/$unit.service" "$SYSTEMD_DIR/$unit.service" "$router"; then
+      changed+=("$unit")
+    fi
+  done
+  restart+=("${changed[@]}")
+
+  translate_opencode_config "$router"
+
+  if [[ ${#changed[@]} -gt 0 ]]; then
+    systemctl --user daemon-reload
+  fi
+  if [[ "$force" == "1" ]]; then
+    restart=(kubernetes-mcp-server mcp-grafana gitea-mcp rancher-login-watch)
+  fi
+
+  if [[ ${#restart[@]} -eq 0 ]]; then
+    info "MCP servers already bound to $router; nothing to restart"
+    return 0
+  fi
+  for svc in "${restart[@]}"; do
+    if systemctl --user restart "$svc.service"; then
+      info "restarted $svc.service on $router"
+    else
+      warn "failed to restart $svc.service"
+    fi
+  done
+}
+
 main() {
-  local translate_only=0
+  local translate_only=0 rebind=0 force=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --translate-only) translate_only=1; shift ;;
+      --rebind) rebind=1; shift ;;
+      --force) force=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown option: $1" ;;
     esac
   done
+
+  if [[ "$rebind" == "1" ]]; then
+    rebind_services "$force"
+    return 0
+  fi
 
   local router
   router="$(docker_router_ip)"
@@ -222,7 +304,7 @@ main() {
 
   # 3. systemd units (translated).
   local unit
-  for unit in kubernetes-mcp-server mcp-grafana gitea-mcp rancher-login-watch; do
+  for unit in kubernetes-mcp-server mcp-grafana gitea-mcp rancher-login-watch mcp-rebind; do
     if [[ -f "$MCP_SRC/$unit.service" ]]; then
       cp "$MCP_SRC/$unit.service" "$SYSTEMD_DIR/$unit.service"
       translate_localhost "$SYSTEMD_DIR/$unit.service" "$router"
@@ -256,7 +338,7 @@ main() {
   # 5. Enable and start the services (autostart with the user session).
   if systemd_user_available; then
     systemctl --user daemon-reload
-    for svc in kubernetes-mcp-server mcp-grafana gitea-mcp rancher-login-watch; do
+    for svc in kubernetes-mcp-server mcp-grafana gitea-mcp rancher-login-watch mcp-rebind; do
       if systemctl --user enable "$svc.service" 2>/dev/null && systemctl --user restart "$svc.service" 2>/dev/null; then
         info "enabled and started $svc.service"
       else
