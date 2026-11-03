@@ -1,0 +1,14 @@
+[Unit]
+Description=Mute audio while the session is locked
+After=wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/audio-mute-on-lock
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
