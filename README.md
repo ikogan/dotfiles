@@ -200,6 +200,9 @@ Note that `mcp-grafana` serves unauthenticated on a non-loopback address; see
 the comment in `mcp/mcp-grafana.service` for how to require a bearer token.
 
 The servers bind to the docker bridge gateway, so a host firewall (ufw)
-blocks container access by default. If ufw is present, run
-`mcp/mcp-firewall.sh` from the checkout to allow ports 8180/8280 from the
-docker bridge subnet only; it is not run or linked by `install.sh`.
+blocks container access by default. If ufw is present, `install.sh` checks
+for the rules that allow ports 8180/8280/8380 from the docker bridge subnets
+and, if any are missing, asks for sudo to add them via `install-system.sh`.
+A system unit, `docker-network-refresh.service`, reruns after every docker
+start or restart: it refreshes the ufw rules and re-runs `setup-mcp.sh` as your
+user, so the MCP servers rebind to the current docker gateway.

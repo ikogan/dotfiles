@@ -1,5 +1,5 @@
 #!/bin/bash
-SCRIPTPATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+SCRIPTPATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 || exit ; pwd -P )"
 HAVE_GUM=""
 TEMP_DIR=""
 PATH="${HOME}"/.local/bin:"${PATH}"
@@ -15,6 +15,20 @@ has_cmd() {
 
 is_devcontainer() {
     [[ -n "${REMOTE_CONTAINERS:-}" ]] || [[ -n "${DEVCONTAINER:-}" ]] || [[ -n "${CODESPACES:-}" ]] || [[ -f "/.dockerenv" && -d "/workspaces" ]]
+}
+
+has_battery() {
+    local supply
+    for supply in /sys/class/power_supply/*; do
+        if [[ -f "${supply}/type" ]] && [[ "$(cat "${supply}/type")" = "Battery" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+is_physical_device() {
+    has_cmd systemd-detect-virt && ! systemd-detect-virt --quiet
 }
 
 pushd "${SCRIPTPATH}" &>/dev/null || exit
@@ -409,11 +423,28 @@ else
     warn "⚠️  Skipping gitea-mcp installation because temporary directory is unavailable."
 fi
 
-warn "⚠️  Remember to store the Gitea token for gitea-mcp in the keyring:"
-warn "   secret-tool store --label='gitea-mcp token' service gitea-mcp url https://git.gaea.mythicnet.org"
+has_gitea_token() {
+    [[ -n "$(secret-tool lookup service gitea-mcp url "https://git.gaea.mythicnet.org" 2>/dev/null)" ]]
+}
 
-warn "⚠️  Remember to add GRAFANA_API_KEY to ~/.copilot/mcp-config.json"
-warn "   Generate it at: https://metrics.gaea.mythicnet.org → Administration → Service Accounts → Add service account token"
+has_grafana_key() {
+    grep -qE '^GRAFANA_SERVICE_ACCOUNT_TOKEN=.+' "${HOME}/.config/mcp/mcp-grafana.env" 2>/dev/null \
+        || grep -qE '"GRAFANA_API_KEY"[[:space:]]*:[[:space:]]*"[^"]+"' "${HOME}/.copilot/mcp-config.json" 2>/dev/null
+}
+
+if ! has_cmd secret-tool; then
+    warn "⚠️  secret-tool is not installed, so the gitea-mcp token can't be checked or read."
+    warn "   Install libsecret's command-line tools with your package manager:"
+    warn "   Arch/CachyOS: sudo pacman -S libsecret    Debian/Ubuntu: sudo apt install libsecret-tools"
+elif ! has_gitea_token; then
+    warn "⚠️  Remember to store the Gitea token for gitea-mcp in the keyring:"
+    warn "   secret-tool store --label='gitea-mcp token' service gitea-mcp url https://git.gaea.mythicnet.org"
+fi
+
+if ! has_grafana_key; then
+    warn "⚠️  Remember to add GRAFANA_API_KEY to ~/.copilot/mcp-config.json"
+    warn "   Generate it at: https://metrics.gaea.mythicnet.org → Administration → Service Accounts → Add service account token"
+fi
 
 if [[ "$(uname -o)" = "Android" ]]; then
     info "Krew seems to blow up on Android, skipping."
@@ -493,6 +524,17 @@ for EACH in "${SCRIPTPATH}"/scripts/*; do
         ln -sf "${EACH}" ~/.local/bin/"$(basename "${EACH%.*}")"
     fi
 done
+
+if has_cmd systemctl && systemctl --user show-environment >/dev/null 2>&1; then
+    info "Installing audio-mute-on-lock user service..."
+    mkdir -p "${HOME}/.config/systemd/user"
+    ln -sf "${SCRIPTPATH}/systemd-user/audio-mute-on-lock.service" "${HOME}/.config/systemd/user/audio-mute-on-lock.service"
+    if ! { systemctl --user daemon-reload && systemctl --user enable --now audio-mute-on-lock.service; }; then
+        warn "⚠️  Failed to enable audio-mute-on-lock.service."
+    fi
+else
+    warn "⚠️  systemd user session unavailable. Skipping audio-mute-on-lock.service."
+fi
 
 echo "Installing Oh-My-Tmux..."
 if has_cmd tmux; then
@@ -644,8 +686,33 @@ if [[ -x "${SCRIPTPATH}/scripts/setup-lint.sh" ]]; then
     "${SCRIPTPATH}/scripts/setup-lint.sh" || warn "⚠️  Linter setup completed with warnings."
 fi
 
+SYSTEM_ARGS=()
+if has_battery && is_physical_device; then
+    SYSTEM_ARGS+=("--power")
+fi
+
 if has_cmd ufw; then
-    warn "⚠️  ufw detected: run '${SCRIPTPATH}/mcp/mcp-firewall.sh' to allow the MCP server ports (8180, 8280) from the docker bridge network only."
+    SYSTEM_ARGS+=("--ufw")
+fi
+
+if has_cmd docker; then
+    SYSTEM_ARGS+=("--docker")
+fi
+
+if [[ ${#SYSTEM_ARGS[@]} -gt 0 ]]; then
+    system_status=0
+    "${SCRIPTPATH}/install-system.sh" "${SYSTEM_ARGS[@]}" || system_status=$?
+    if [[ "${system_status}" -eq 10 ]]; then
+        info "Installing system files (needs root)..."
+        if sudo -p "[sudo] password for %u to install system files (power profiles, ufw rules and docker refresh for MCP servers): " \
+            "${SCRIPTPATH}/install-system.sh" "${SYSTEM_ARGS[@]}"; then
+            info "🎉 Successfully installed system files!"
+        else
+            warn "⚠️  System files were not installed."
+        fi
+    elif [[ "${system_status}" -ne 0 ]]; then
+        warn "⚠️  System file check failed."
+    fi
 fi
 
 echo "🎉 Successfully completed dotfiles installation!"
