@@ -1,0 +1,9 @@
+[Unit]
+Description=Set power profile from AC adapter state
+
+[Service]
+Type=oneshot
+# Restarting the unit during this delay debounces bursts of udev events,
+# so the script runs once, after the adapter state has settled.
+ExecStartPre=/usr/bin/sleep 2
+ExecStart=/usr/local/libexec/auto-power-profiles.sh

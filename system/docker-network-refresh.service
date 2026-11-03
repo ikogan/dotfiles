@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh ufw rules and MCP servers after docker starts
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/docker-network-refresh
+
+[Install]
+WantedBy=docker.service

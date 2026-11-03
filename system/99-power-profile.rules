@@ -1,0 +1,1 @@
+SUBSYSTEM=="power_supply", KERNEL=="AC*", ACTION=="change", RUN+="/usr/bin/systemctl --no-block restart auto-power-profiles.service"
