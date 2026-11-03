@@ -1,0 +1,11 @@
+[Unit]
+Description=Rebind MCP servers to the current docker gateway
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/setup-mcp --rebind
+
+[Install]
+WantedBy=default.target
