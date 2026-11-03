@@ -177,7 +177,7 @@ default).
 - installs user-level systemd units (`~/.config/systemd/user/`) and enables them
   to autostart with the session (when systemd is available),
 - translates any `localhost` in the MCP config to the local docker router IP
-  (the bridge gateway, e.g. `172.17.0.1`) so endpoints are reachable from
+  (the docker0 bridge address, e.g. `172.18.0.1`, read from the interface) so endpoints are reachable from
   containers,
 - rewrites the OpenCode `mcp` section to connect to those network servers
   (`type: "remote"`) instead of invoking them locally.
