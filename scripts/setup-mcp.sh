@@ -59,12 +59,14 @@ GITEA_PORT="8380"    # gitea-mcp (mcp/gitea-mcp.service)
 # --- docker router detection ------------------------------------------------
 
 # Return the IP of the host as seen from containers on the default bridge
-# network (the "docker router"). Falls back to loopback when docker is absent.
+# network (the "docker router"). Reads the docker0 interface address first,
+# since `docker network inspect` can report a stale gateway. Falls back to
+# loopback when docker is absent.
 docker_router_ip() {
   local ip
-  ip="$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null | head -n1 | tr -d '[:space:]')"
+  ip="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
   if [[ -z "$ip" ]]; then
-    ip="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+    ip="$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null | head -n1 | tr -d '[:space:]')"
   fi
   printf '%s' "${ip:-127.0.0.1}"
 }
@@ -255,7 +257,7 @@ main() {
   if systemd_user_available; then
     systemctl --user daemon-reload
     for svc in kubernetes-mcp-server mcp-grafana gitea-mcp rancher-login-watch; do
-      if systemctl --user enable --now "$svc.service" 2>/dev/null; then
+      if systemctl --user enable "$svc.service" 2>/dev/null && systemctl --user restart "$svc.service" 2>/dev/null; then
         info "enabled and started $svc.service"
       else
         warn "failed to enable $svc.service"

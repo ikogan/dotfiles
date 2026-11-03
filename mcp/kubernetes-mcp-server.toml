@@ -2,8 +2,6 @@
 # reachable from containers on the bridge network.
 bind_address = "localhost"
 port = "8180"
-
-[http]
 read_only = true
 toolsets = ["core", "config", "helm", "observability/metrics", "observability/logs"]
 
