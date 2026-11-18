@@ -5,12 +5,12 @@
 # client's (terminal's) aspect ratio.
 #
 # Panes are identified by the pane user option `@agentwork-role`, which is set
-# by the agent-dev script to either `opencode` or `terminal`. The layout rules
-# are:
+# by the agent-dev script to either `agent` (`opencode` in older sessions) or
+# `terminal`. The layout rules are:
 #
 #   - visually wider than tall  -> side-by-side: terminal (large) on the left,
-#                                  opencode on the right.
-#   - visually taller than wide -> stacked: opencode (large) on the top,
+#                                  agent on the right.
+#   - visually taller than wide -> stacked: agent (large) on the top,
 #                                  terminal on the bottom.
 #
 # "Visually" here assumes a ~2:1 monospaced character cell (height ≈ 2×
@@ -73,7 +73,7 @@ fi
 # Locate the agent and terminal panes by their role (id + index), so we don't
 # depend on pane-base-index being 0.
 agent_line="$(tmux list-panes -t "$target" -F '#{pane_id} #{pane_index} #{@agentwork-role}' 2>/dev/null \
-  | awk '$3 == "opencode" { print $1, $2; exit }')"
+  | awk '$3 == "agent" || $3 == "opencode" { print $1, $2; exit }')"
 term_line="$(tmux list-panes -t "$target" -F '#{pane_id} #{pane_index} #{@agentwork-role}' 2>/dev/null \
   | awk '$3 == "terminal" { print $1, $2; exit }')"
 
@@ -91,7 +91,7 @@ else
 fi
 
 if (( height * 2 > width )); then
-  # Visually taller: stacked. opencode (large, top) = 80%, terminal (bottom) = 20%.
+  # Visually taller: stacked. agent (large, top) = 80%, terminal (bottom) = 20%.
   main_size="$(( height * 80 / 100 ))"
   (( main_size >= 1 )) || main_size=1
   tmux set-option -w -t "$target" main-pane-height "$main_size"
@@ -100,7 +100,7 @@ if (( height * 2 > width )); then
     tmux swap-pane -s "$term_id" -t "$agent_id"
   fi
 else
-  # Visually wider: side by side. main (large, left) = terminal, secondary = opencode.
+  # Visually wider: side by side. main (large, left) = terminal, secondary = agent.
   main_size="$(( width * 60 / 100 ))"
   (( main_size >= 1 )) || main_size=1
   tmux set-option -w -t "$target" main-pane-width "$main_size"

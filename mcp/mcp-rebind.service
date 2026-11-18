@@ -4,7 +4,6 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
 ExecStart=%h/.local/bin/setup-mcp --rebind
 
 [Install]

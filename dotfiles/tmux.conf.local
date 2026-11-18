@@ -438,7 +438,7 @@ set-option -ga update-environment ' TERM_PROGRAM'
 # -- agentic workflow auto-layout ---------------------------------------------
 # Automatically arrange a two-pane agent workspace based on the client's
 # aspect ratio. Pane roles are stored in the @agentwork-role pane user option
-# ("opencode" or "terminal"); the helper applies the right layout and swaps the
+# ("agent" or "terminal"); the helper applies the right layout and swaps the
 # panes into place so the same logical pane stays in the correct position as
 # the terminal is resized or rotated. See scripts/tmux-agent-layout.sh.
 set-hook -g client-attached 'run-shell "$HOME/.local/bin/tmux-agent-layout #{session_name}:#{window_index} #{client_width} #{client_height}"'

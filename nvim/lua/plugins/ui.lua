@@ -47,6 +47,7 @@ return {
             filesystem = {
                 follow_current_file = { enabled = true },
                 hijack_netrw_behavior = "disabled",
+                filtered_items = { visible = true },
             },
         },
         config = function(_, opts)

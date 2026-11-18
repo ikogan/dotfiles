@@ -136,4 +136,4 @@ set_transient_prompt() {
 set_transient_prompt
 
 
-export PATH="/home/kogan/.local/bin:$PATH"
+dotfiles_prepend_path "${HOME}/.local/bin"

@@ -1,11 +1,7 @@
 # shellcheck shell=bash
 # Shared shell configuration for bash and zsh - interactive setup.
 # This should be sourced after oh-my-zsh (for zsh) to ensure interactive features work properly.
-
-if [[ -n "${DOTFILES_SHARED_INTERACTIVE_SH_LOADED:-}" ]]; then
-    return 0
-fi
-DOTFILES_SHARED_INTERACTIVE_SH_LOADED=1
+# It is safe to source again to pick up changes.
 
 # Helper function (redefine here for safety)
 dotfiles_has_cmd() {
@@ -45,7 +41,7 @@ if [[ -n "${ZSH_VERSION:-}" ]]; then
 
     if dotfiles_has_cmd pyenv; then
         export PYENV_ROOT="${HOME}/.pyenv"
-        [[ -d ${PYENV_ROOT}/bin ]] && export PATH="${PYENV_ROOT}/bin:${PATH}"
+        [[ -d ${PYENV_ROOT}/bin ]] && dotfiles_prepend_path "${PYENV_ROOT}/bin"
         eval "$(pyenv init - zsh)"
     fi
 
@@ -80,7 +76,7 @@ elif [[ -n "${BASH_VERSION:-}" ]]; then
 
     if dotfiles_has_cmd pyenv; then
         export PYENV_ROOT="${HOME}/.pyenv"
-        [[ -d ${PYENV_ROOT}/bin ]] && export PATH="${PYENV_ROOT}/bin:${PATH}"
+        [[ -d ${PYENV_ROOT}/bin ]] && dotfiles_prepend_path "${PYENV_ROOT}/bin"
         eval "$(pyenv init - bash)"
     fi
 
@@ -92,3 +88,5 @@ elif [[ -n "${BASH_VERSION:-}" ]]; then
         eval "$(starship init bash)"
     fi
 fi
+
+dotfiles_dedupe_path

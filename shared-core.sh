@@ -1,11 +1,7 @@
 # shellcheck shell=bash
 # Shared shell configuration for bash and zsh - core setup.
-# This should be sourced early, before shell-specific initialization.
-
-if [[ -n "${DOTFILES_SHARED_CORE_SH_LOADED:-}" ]]; then
-    return 0
-fi
-DOTFILES_SHARED_CORE_SH_LOADED=1
+# This should be sourced early, before shell-specific initialization. It is
+# safe to source again (for example `source ~/.zshrc`) to pick up changes.
 
 dotfiles_has_cmd() {
     command -v "$1" >/dev/null 2>&1
@@ -19,6 +15,39 @@ dotfiles_append_path() {
         *":${path_entry}:"*) ;;
         *) PATH="${PATH}:${path_entry}" ;;
     esac
+}
+
+# Put a directory first in PATH, removing any other occurrence, so sourcing
+# this file again doesn't add duplicates but the directory still takes
+# precedence over the same one later in an inherited PATH.
+dotfiles_prepend_path() {
+    local path_entry="$1" rest
+
+    [[ -n "${path_entry}" ]] || return 0
+    rest=":${PATH}:"
+    while [[ "${rest}" == *":${path_entry}:"* ]]; do
+        rest="${rest//:"${path_entry}":/:}"
+    done
+    rest="${rest#:}"
+    rest="${rest%:}"
+    PATH="${path_entry}${rest:+:${rest}}"
+}
+
+# Drop repeated PATH entries, keeping the first, for tools such as nvm that add
+# to PATH every time they're loaded.
+dotfiles_dedupe_path() {
+    local rest="${PATH}:" path_entry result=""
+
+    while [[ -n "${rest}" ]]; do
+        path_entry="${rest%%:*}"
+        rest="${rest#*:}"
+        [[ -n "${path_entry}" ]] || continue
+        case ":${result}:" in
+            *":${path_entry}:"*) ;;
+            *) result="${result:+${result}:}${path_entry}" ;;
+        esac
+    done
+    PATH="${result}"
 }
 
 if [[ -z "${DOTFILES_USER_RC_LOADED:-}" ]] && [[ -f "${HOME}/.dotfilesrc" ]]; then
@@ -37,7 +66,18 @@ if dotfiles_has_cmd locale; then
     done
 fi
 
-export PATH="${HOME}/.venv/bin:${KREW_ROOT:-$HOME/.krew}/bin:${HOME}/go/bin:${HOME}/.local/bin:${HOME}/.cache/cloud-code/installer/google-cloud-sdk/bin:/usr/local/bin:${PATH}"
+# Prepended in reverse, so ~/.venv/bin ends up first.
+for path_entry in \
+    /usr/local/bin \
+    "${HOME}/.cache/cloud-code/installer/google-cloud-sdk/bin" \
+    "${HOME}/.local/bin" \
+    "${HOME}/go/bin" \
+    "${KREW_ROOT:-$HOME/.krew}/bin" \
+    "${HOME}/.venv/bin"; do
+    dotfiles_prepend_path "${path_entry}"
+done
+unset path_entry
+export PATH
 export EDITOR='vim'
 export RICH_TERMINALS='iTerm.app Terminal-Plus Babun gnome gnome-wayland powerline-compat gnome-terminal chrome code deepin-terminal'
 
@@ -62,7 +102,7 @@ if [[ ! -e "${NPM_PACKAGES}" ]]; then
     mkdir -p "${NPM_PACKAGES}"
 fi
 
-export PATH="${NPM_PACKAGES}/bin:${PATH}"
+dotfiles_prepend_path "${NPM_PACKAGES}/bin"
 
 NVM_INIT="/usr/share/nvm/init-nvm.sh"
 
@@ -71,7 +111,7 @@ if [[ -f "${NVM_INIT}" ]]; then
 fi
 
 if [[ -d "${HOME}/.cargo/bin" ]]; then
-    export PATH="${HOME}/.cargo/bin:${PATH}"
+    dotfiles_prepend_path "${HOME}/.cargo/bin"
 fi
 
 if dotfiles_has_cmd manpath; then
@@ -148,6 +188,21 @@ fi
 
 alias git-fuck='git add . && git commit --amend --no-edit -a && git push --force'
 alias kubeseal='kubeseal-interactive'
+
+# Gitea's clone button still shows `tea clone <owner>/<repo>`, but the tea CLI
+# has been replaced by gt, which clones with `gt repo clone`. Other tea
+# commands don't map one-to-one onto gt's, so only clone is translated.
+if dotfiles_has_cmd gt && ! dotfiles_has_cmd tea; then
+    tea() {
+        if [[ "${1:-}" == "clone" ]]; then
+            shift
+            gt repo clone "$@"
+        else
+            echo "tea has been replaced by gt; only 'tea clone' is translated. See: gt --help" >&2
+            return 1
+        fi
+    }
+fi
 
 if dotfiles_has_cmd secret-tool; then
     mkdir -p "${HOME}/.copilot"

@@ -1,0 +1,15 @@
+return {
+    "bash",
+    "gotmpl",
+    "helm",
+    "jinja",
+    "jinja_inline",
+    "lua",
+    "markdown",
+    "markdown_inline",
+    "python",
+    "query",
+    "vim",
+    "vimdoc",
+    "yaml",
+}

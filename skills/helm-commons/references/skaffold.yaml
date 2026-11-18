@@ -1,0 +1,28 @@
+apiVersion: skaffold/v4beta13
+kind: Config
+build:
+  tagPolicy:
+    dateTime:
+      format: "2006-01-02"
+  artifacts:
+    - image: registry.mydomain.org/repository/imagename
+      context: ./docker
+      docker:
+        buildArgs:
+          # renovate: type=docker image=upstream-app
+          UPSTREAM_APP_VERSION: 1.2.3
+          # renovate: type=github-release user/repo
+          UPSTREAM_SIDECAR_VERSION: v0.1.2
+  local:
+    push: true
+deploy:
+  helm:
+    releases:
+      - name: upstream-app
+        chartPath: helm
+        namespace: should-already-be-set
+        valuesFiles:
+          - helm/values.yaml
+        upgradeOnChange: true
+        setValueTemplates:
+          upstream.image.tag: "{{ .IMAGE_TAG_registry_mydomain_org_repository_imagename }}"

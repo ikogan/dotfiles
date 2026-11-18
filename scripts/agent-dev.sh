@@ -3,18 +3,27 @@
 #
 # agent-dev — build a devcontainer and open a tmux workspace with two panes:
 #
-#   • an "agent" pane running OpenCode inside a devcontainer
+#   • an "agent" pane running a coding agent inside a devcontainer
 #   • an "IDE/terminal" pane running a shell inside a devcontainer
+#
+# The agent harness is chosen by the name the script is invoked as:
+#
+#   • opencode-dev  -> OpenCode
+#   • claude-dev    -> Claude Code
+#   • copilot-dev   -> GitHub Copilot CLI
+#   • agent-dev     -> asks which one (with gum when it's installed)
 #
 # The devcontainer image is built once, then started twice with
 # `devcontainer up`:
 #
-#   • role "terminal"  -> mounts ${HOME} and the host SSH agent socket
-#   • role "opencode"  -> mounts the OpenCode configuration directory
+#   • role "terminal"   -> mounts ${HOME} and the host SSH agent socket
+#   • role "<harness>"  -> mounts the harness configuration and a
+#                          per-workspace state directory
 #
 # Usage:
-#   agent-dev [path/to/workspace] [--config path/to/devcontainer.json]
-#             [--background] [--remove-containers]
+#   {opencode,claude,copilot}-dev [path/to/workspace]
+#             [--config path/to/devcontainer.json]
+#             [--background] [--remove-containers] [--kill-containers]
 #   agent-dev list
 #   agent-dev attach [session-name]
 #   agent-dev reconnect [session-name]
@@ -24,11 +33,14 @@
 #   --background the tmux session is created detached and the script exits
 #   without attaching (prints how to attach). --remove-containers removes the
 #   workspace's existing devcontainers first so they pick up a rebuilt image.
+#   --kill-containers removes all containers associated with the workspace and
+#   exits without building or starting it.
 #
 #   `list` lists running agent sessions; `attach` attaches to one (interactively
 #   picking with gum when no session name is given). `reconnect` recreates any
-#   missing OpenCode or terminal pane in a session and restarts its container
-#   if it stopped; it doesn't attach.
+#   missing agent or terminal pane in a session and restarts its container if
+#   it stopped; it doesn't attach. These subcommands work on sessions of every
+#   harness, whichever name they're invoked as.
 #
 #   Must be run from a plain terminal — not from inside tmux (it manages the
 #   host's tmux session directly and attaches with `attach-session`). The
@@ -40,8 +52,11 @@ set -uo pipefail
 # (`devcontainer up`) respond to this directly; the build step swallows SIGINT
 # (the CLI cancels gracefully and exits 0), so its interruption is detected via
 # the per-run image label instead (see the build section).
-trap 'printf "%s✗ agent-dev: interrupted%s\n" "$ERR_RED" "$ERR_RESET" >&2; exit 130' INT
+trap 'printf "%s✗ %s: interrupted%s\n" "$ERR_RED" "$PROG" "$ERR_RESET" >&2; exit 130' INT
 trap 'exit 143' TERM
+
+PROG="$(basename "$0")"
+PROG="${PROG%.sh}"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -58,38 +73,306 @@ else
   ERR_RED=""; ERR_YELLOW=""; ERR_BOLD=""; ERR_RESET=""
 fi
 
-die()  { printf '%s✗ agent-dev: error:%s %s\n' "$ERR_RED$ERR_BOLD" "$ERR_RESET" "$*" >&2; exit 1; }
-warn() { printf '%s⚠ agent-dev: warning:%s %s\n' "$ERR_YELLOW" "$ERR_RESET" "$*" >&2; }
-info() { printf '%s›%s agent-dev: %s\n' "$OUT_CYAN" "$OUT_RESET" "$*"; }
-ok()   { printf '%s✔%s agent-dev: %s\n' "$OUT_GREEN" "$OUT_RESET" "$*"; }
+die()  { printf '%s✗ %s: error:%s %s\n' "$ERR_RED$ERR_BOLD" "$PROG" "$ERR_RESET" "$*" >&2; exit 1; }
+warn() { printf '%s⚠ %s: warning:%s %s\n' "$ERR_YELLOW" "$PROG" "$ERR_RESET" "$*" >&2; }
+info() { printf '%s›%s %s: %s\n' "$OUT_CYAN" "$OUT_RESET" "$PROG" "$*"; }
+ok()   { printf '%s✔%s %s: %s\n' "$OUT_GREEN" "$OUT_RESET" "$PROG" "$*"; }
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# Resolve this script's directory (through symlinks) for its helper scripts and
+# the dotfiles' shared agent skills.
+SELF="${BASH_SOURCE[0]}"
+if has_cmd readlink; then
+  SELF="$(readlink -f "$SELF" 2>/dev/null || printf '%s' "$SELF")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd -P)"
+SKILLS_SRC="$(dirname "$SCRIPT_DIR")/skills"
+# The dotfiles' harness config folder and the global agent instructions in it
+# (optional). OpenCode containers mount the folder (see opencode_harness_mount);
+# Claude Code and Copilot get a copy of the instructions in their config dir.
+HARNESS_SRC="$(dirname "$SCRIPT_DIR")/harness"
+INSTRUCTIONS_SRC="$HARNESS_SRC/user-instructions.md"
+OPENCODE_HARNESS_TARGET=/dotfiles-harness
 
 # OpenCode TUI settings for the agent pane: Ctrl+C and Ctrl+D don't exit; Ctrl+X
 # then Q does.
 OPENCODE_CLI_CONFIG='{"keybinds":{"app.exit":["<leader>q"]}}'
 
-# Where the OpenCode container sees the dotfiles' skills (inside its config dir).
-OPENCODE_SKILLS_TARGET=/opencode-config/skills
+# --- harnesses ---------------------------------------------------------------
+
+# The harness for a program name. Prints nothing for any other name (such as
+# agent-dev); building a workspace then asks which harness to run.
+harness_for_name() {
+  case "$1" in
+    opencode-dev*) printf 'opencode' ;;
+    claude-dev*)   printf 'claude' ;;
+    copilot-dev*)  printf 'copilot' ;;
+  esac
+}
+
+# Set the AGENT_* globals describing a harness:
+#   AGENT_LABEL          display name
+#   AGENT_BIN            command run in the agent pane
+#   AGENT_CONFIG_TARGET  container path of the harness's config directory
+#   AGENT_SKILLS_TARGET  container path the dotfiles' skills are mounted at
+#   AGENT_ENV            environment for the agent pane and lifecycle scripts
+#   AGENT_STATE_ROOT     host dir holding per-workspace state directories
+set_harness() {
+  HARNESS="$1"
+  local data="${XDG_DATA_HOME:-${HOME}/.local/share}"
+  case "$HARNESS" in
+    opencode)
+      AGENT_LABEL="OpenCode"
+      AGENT_BIN=opencode
+      AGENT_CONFIG_TARGET=/opencode-config
+      AGENT_ENV=("OPENCODE_CONFIG_DIR=/opencode-config" "XDG_DATA_HOME=/opencode-data")
+      AGENT_STATE_ROOT="$data/opencode-containers"
+      ;;
+    claude)
+      AGENT_LABEL="Claude Code"
+      AGENT_BIN=claude
+      AGENT_CONFIG_TARGET=/claude-config
+      AGENT_ENV=("CLAUDE_CONFIG_DIR=/claude-config")
+      AGENT_STATE_ROOT="$data/claude-containers"
+      ;;
+    copilot)
+      AGENT_LABEL="GitHub Copilot"
+      AGENT_BIN=copilot
+      AGENT_CONFIG_TARGET=/copilot-home
+      AGENT_ENV=("COPILOT_HOME=/copilot-home")
+      AGENT_STATE_ROOT="$data/copilot-containers"
+      ;;
+    *)
+      die "unknown harness: $HARNESS" ;;
+  esac
+  AGENT_SKILLS_TARGET="$AGENT_CONFIG_TARGET/skills"
+}
+
+HARNESS="$(harness_for_name "$PROG")"
+[[ -n "$HARNESS" ]] && set_harness "$HARNESS"
+
+# Per-workspace state directory on the host, so each agent container keeps its
+# OWN sessions and credentials across recreation — never shared with the host
+# or other containers. Credentials are copied in by sync_agent_config.
+#
+# Layout: <state root>/<basename>/<hash-of-full-path> so it's easy to find by
+# name, but two workspaces that share a basename don't collide.
+agent_state_dir() {
+  local ws="$1"
+  printf '%s/%s/%s' "$AGENT_STATE_ROOT" "$(basename "$ws")" \
+    "$(printf '%s' "$ws" | sha256sum | cut -c1-12)"
+}
+
+# The host's OpenCode config dir, mounted read-write as the container's config
+# dir (OpenCode keeps its state in the separate data dir).
+opencode_config_dir_host() {
+  printf '%s' "${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
+}
+
+# The `devcontainer up` arguments that mount the harness's config and state
+# into the agent container and point the harness at them.
+agent_mount_args() {
+  local state
+  state="$(agent_state_dir "$1")"
+  agent_mounts=()
+  case "$HARNESS" in
+    opencode)
+      # OpenCode creates log/ etc. with a non-recursive mkdir, so the data dir
+      # itself must already exist.
+      mkdir -p "$state/opencode"
+      agent_mounts+=(--mount "type=bind,source=$(opencode_config_dir_host),target=/opencode-config")
+      agent_mounts+=(--mount "type=bind,source=$state,target=/opencode-data")
+      ;;
+    *)
+      # The skills mount point must exist in the state dir, or docker creates
+      # it as root.
+      mkdir -p "$state/skills"
+      agent_mounts+=(--mount "type=bind,source=$state,target=$AGENT_CONFIG_TARGET")
+      ;;
+  esac
+  local e
+  for e in "${AGENT_ENV[@]}"; do
+    agent_mounts+=(--remote-env "$e")
+  done
+}
+
+# Copy a file from the host config into the state dir when it exists there.
+sync_file() {
+  local src="$1" dest="$2" mode="${3:-0644}"
+  [[ -f "$src" ]] || return 0
+  cmp -s "$src" "$dest" 2>/dev/null && return 0
+  install -m "$mode" "$src" "$dest"
+}
+
+# Replace a directory in the state dir with a copy of the host's, following
+# symlinks (links into the host home don't resolve in the container).
+sync_dir() {
+  local src="$1" dest="$2"
+  [[ -d "$src" ]] || return 0
+  rm -rf "$dest"
+  cp -rL "$src" "$dest" 2>/dev/null || warn "could not copy $src"
+}
+
+# Copy the global agent instructions into a harness's config dir: the
+# dotfiles' harness/user-instructions.md when it exists, otherwise the host
+# harness's own file (for example a ~/.claude/CLAUDE.md not managed here).
+sync_instructions() {
+  local host_file="$1" dest="$2"
+  if [[ -f "$INSTRUCTIONS_SRC" ]]; then
+    sync_file "$INSTRUCTIONS_SRC" "$dest"
+  else
+    sync_file "$host_file" "$dest"
+  fi
+}
+
+# Copy the host's OpenCode credentials into the container's own DB (idempotent:
+# `auth import` skips credentials already present). This is how we avoid
+# sharing the SQLite DB between the host and container servers. Run as the
+# container's remote user so the DB it creates is owned by the user that runs
+# OpenCode.
+sync_opencode_config() {
+  local cid="$1" user="$2" creds
+  has_cmd opencode || return 0
+  creds="$(opencode auth export --standalone 2>/dev/null || true)"
+  [[ -n "$creds" && "$creds" != "[]" ]] || return 0
+  if docker exec -i -u "$user" -e "XDG_DATA_HOME=/opencode-data" -e "OPENCODE_CONFIG_DIR=/opencode-config" \
+      "$cid" opencode auth import --standalone <<<"$creds" >/dev/null 2>&1; then
+    ok "imported host OpenCode credentials into the agent container"
+  else
+    warn "failed to import OpenCode credentials into the agent container"
+  fi
+}
+
+# Sync the host's Claude Code configuration into the container's config dir:
+# settings, memory, keybindings, agents and commands are copied over, the
+# OAuth credentials are copied when the host's are newer, and the account,
+# onboarding and MCP server entries are merged into the container's
+# .claude.json (with the workspace marked as trusted). Sessions and history
+# stay per-workspace.
+sync_claude_config() {
+  local state="$1" remote_ws="$2"
+  local host_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" host_json cur tmp f
+  if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+    host_json="$CLAUDE_CONFIG_DIR/.claude.json"
+  else
+    host_json="$HOME/.claude.json"
+  fi
+
+  for f in settings.json keybindings.json; do
+    sync_file "$host_dir/$f" "$state/$f"
+  done
+  sync_instructions "$host_dir/CLAUDE.md" "$state/CLAUDE.md"
+  for f in agents commands; do
+    sync_dir "$host_dir/$f" "$state/$f"
+  done
+
+  if [[ -f "$host_dir/.credentials.json" ]] \
+      && [[ ! -f "$state/.credentials.json" || "$host_dir/.credentials.json" -nt "$state/.credentials.json" ]]; then
+    install -m 0600 "$host_dir/.credentials.json" "$state/.credentials.json" \
+      && ok "copied host Claude Code credentials into the agent container"
+  fi
+
+  has_cmd jq || { warn "jq not found; skipping Claude Code account and MCP sync"; return 0; }
+  cur="$state/.claude.json"
+  [[ -s "$cur" ]] || printf '{}\n' > "$cur"
+  [[ -f "$host_json" ]] || host_json=/dev/null
+  tmp="$(mktemp "$state/.claude.json.XXXXXX")"
+  if jq -n --slurpfile cur "$cur" --slurpfile host "$host_json" --arg ws "$remote_ws" '
+      ($cur[0] // {})
+      + (($host[0] // {})
+         | {hasCompletedOnboarding, lastOnboardingVersion, oauthAccount, userID, theme, mcpServers}
+         | with_entries(select(.value != null)))
+      | if $ws == "" then . else .projects[$ws].hasTrustDialogAccepted = true end
+    ' > "$tmp"; then
+    chmod 0600 "$tmp"
+    mv "$tmp" "$cur"
+  else
+    rm -f "$tmp"
+    warn "could not merge the host Claude Code settings into $cur"
+  fi
+}
+
+# Sync the host's Copilot CLI configuration into the container's COPILOT_HOME:
+# settings, MCP servers (as translated by setup-mcp), custom instructions and
+# agents. The host keeps its GitHub token in the system keyring, which the
+# container can't reach, so log in once with /login inside the container; the
+# token then persists in the per-workspace state dir.
+sync_copilot_config() {
+  local state="$1" host_dir="${COPILOT_HOME:-$HOME/.copilot}" f
+  for f in settings.json mcp-config.json; do
+    sync_file "$host_dir/$f" "$state/$f"
+  done
+  sync_instructions "$host_dir/copilot-instructions.md" "$state/copilot-instructions.md"
+  sync_dir "$host_dir/agents" "$state/agents"
+}
+
+# Sync the host harness configuration into the agent container of a workspace.
+sync_agent_config() {
+  local cid="$1" user="$2" workspace="$3" remote_ws="$4" state
+  state="$(agent_state_dir "$workspace")"
+  case "$HARNESS" in
+    opencode) sync_opencode_config "$cid" "$user" ;;
+    claude)   sync_claude_config "$state" "$remote_ws" ;;
+    copilot)  sync_copilot_config "$state" ;;
+  esac
+}
+
+# Make sure the harness's binary is in the agent container: copy the host's
+# when it's a native executable (the image may not ship it), or, for Copilot,
+# install the npm package when the container has npm. Returns non-zero when
+# the binary is still missing.
+ensure_agent_binary() {
+  local cid="$1" host_bin
+  docker exec "$cid" sh -c "command -v $AGENT_BIN >/dev/null 2>&1" 2>/dev/null && return 0
+
+  host_bin="$(command -v "$AGENT_BIN" 2>/dev/null || true)"
+  [[ -n "$host_bin" ]] && host_bin="$(readlink -f "$host_bin" 2>/dev/null || printf '%s' "$host_bin")"
+  if [[ -n "$host_bin" && "$(head -c 4 "$host_bin" 2>/dev/null)" == $'\x7fELF' ]] \
+      && docker cp "$host_bin" "$cid:/usr/local/bin/$AGENT_BIN" 2>/dev/null \
+      && docker exec "$cid" sh -c "command -v $AGENT_BIN >/dev/null 2>&1" 2>/dev/null; then
+    ok "installed $AGENT_BIN into the agent container from $host_bin"
+    return 0
+  fi
+
+  if [[ "$HARNESS" == "copilot" ]] && docker exec "$cid" sh -c 'command -v npm >/dev/null 2>&1' 2>/dev/null; then
+    info "installing @github/copilot into the agent container with npm..."
+    if docker exec -u root "$cid" npm install -g @github/copilot >/dev/null 2>&1 \
+        && docker exec "$cid" sh -c 'command -v copilot >/dev/null 2>&1' 2>/dev/null; then
+      ok "installed copilot into the agent container"
+      return 0
+    fi
+  fi
+  return 1
+}
 
 # agent-dev manages the host's tmux session directly and attaches with
 # `attach-session`; running it from inside tmux would nest a second tmux, so
 # refuse early.
-if [[ -n "${TMUX:-}" && "${1:-}" != "reconnect" && "${1:-}" != "adopt" ]]; then
-  die "agent-dev cannot be run from inside tmux; run it from a plain terminal"
+if [[ -n "${TMUX:-}" && "${1:-}" != "reconnect" && "${1:-}" != "adopt" \
+    && " $* " != *" --kill-containers "* ]]; then
+  die "$PROG cannot be run from inside tmux; run it from a plain terminal"
 fi
 
 usage() {
-  cat <<'EOF'
-usage: agent-dev [path/to/workspace] [--config path/to/devcontainer.json]
-                 [--background] [--remove-containers]
-       agent-dev list
-       agent-dev attach [session-name]
-       agent-dev reconnect [session-name]
+  cat <<EOF
+usage: $PROG [path/to/workspace] [--config path/to/devcontainer.json]
+       $(printf '%*s' "${#PROG}" '') [--background] [--remove-containers] [--kill-containers]
+       $PROG list
+       $PROG attach [session-name]
+       $PROG reconnect [session-name]
 
 Build a devcontainer and open a tmux workspace with two panes:
-  • an OpenCode agent pane (runs `opencode` in the "opencode" container)
+  • $(if [[ -n "$HARNESS" ]]; then
+        printf 'a %s agent pane (runs "%s" in the "%s" container)' "$AGENT_LABEL" "$AGENT_BIN" "$HARNESS"
+      else
+        printf 'an agent pane (asks which harness to run)'
+      fi)
   • a terminal/IDE pane (runs a shell in the "terminal" container)
+
+The harness follows the name the script runs as: opencode-dev runs OpenCode,
+claude-dev runs Claude Code and copilot-dev runs GitHub Copilot. Run as
+agent-dev, it asks which one (with gum when it's installed).
 
 The workspace defaults to the current directory and the devcontainer config
 defaults to .devcontainer/devcontainer.json relative to the workspace.
@@ -98,14 +381,17 @@ defaults to .devcontainer/devcontainer.json relative to the workspace.
                      attaching (prints how to attach).
 
   --remove-containers
-                     remove this workspace's existing terminal and OpenCode
+                     remove this workspace's existing terminal and agent
                      containers before starting, so they are recreated from
                      the freshly built image.
 
-  list               list running agent sessions.
+  --kill-containers   force-remove all containers associated with this
+                      workspace, then exit without building or starting it.
+
+  list               list running agent sessions (all harnesses).
   attach [name]      attach to an agent session; picks one with gum when no
                      name is given (name may omit the "agent-" prefix).
-  reconnect [name]   recreate a missing OpenCode or terminal pane in a session
+  reconnect [name]   recreate a missing agent or terminal pane in a session
                      (restarting its container if needed), without attaching.
 EOF
 }
@@ -185,14 +471,14 @@ devcontainer_remote_home() {
   esac
 }
 
-# Emit a temporary override config for the OpenCode container and print its
+# Emit a temporary override config for the agent container and print its
 # path. The override is the resolved devcontainer configuration with the host
-# home mount stripped (so the OpenCode container doesn't see the home dir) and,
+# home mount stripped (so the agent container doesn't see the home dir) and,
 # when the host has one, a read-only mount of the host's ~/.gitconfig added.
 # Printing nothing means no override is needed. Used with `--override-config`,
 # so devcontainer.json itself is never edited.
 devcontainer_agent_override() {
-  local rc_raw rc_json stripped tmp gc="" sk="" skills_src
+  local rc_raw rc_json stripped tmp gc="" sk="" hm=""
   has_cmd devcontainer || return 0
   rc_raw="$(devcontainer read-configuration \
       --workspace-folder "$WORKSPACE_DIR" \
@@ -201,15 +487,19 @@ devcontainer_agent_override() {
   rc_json="$(extract_json "$rc_raw")"
   [[ -n "$rc_json" ]] || return 0
   [[ -f "$HOME/.gitconfig" ]] && gc="type=bind,source=$HOME/.gitconfig,target=$HOME/.gitconfig,readonly"
-  # The dotfiles' OpenCode skills, mounted read-only into the OpenCode config
-  # directory (OPENCODE_CONFIG_DIR=/opencode-config), which OpenCode reads skills
-  # from. This shadows the host's skills directory, whose links don't resolve in
-  # the container.
-  skills_src="$(dirname "$SCRIPT_DIR")/opencode/skills"
-  [[ -d "$skills_src" ]] && sk="type=bind,source=$skills_src,target=$OPENCODE_SKILLS_TARGET,readonly"
+  # The dotfiles' agent skills, mounted read-only at the skills directory of
+  # the harness's config dir, which all three harnesses read SKILL.md skills
+  # from. For OpenCode this shadows the host's skills directory, whose links
+  # don't resolve in the container.
+  [[ -d "$SKILLS_SRC" ]] && sk="type=bind,source=$SKILLS_SRC,target=$AGENT_SKILLS_TARGET,readonly"
+  # OpenCode reads the instructions from the dotfiles' harness folder, mounted
+  # read-only outside its config dir (a mount inside it would create the
+  # mount point in the host's ~/.config/opencode).
+  [[ "$HARNESS" == "opencode" && -d "$HARNESS_SRC" ]] \
+    && hm="type=bind,source=$HARNESS_SRC,target=$OPENCODE_HARNESS_TARGET,readonly"
 
   if has_cmd jq; then
-    stripped="$(jq -c --arg home "$HOME" --arg gc "$gc" --arg sk "$sk" '
+    stripped="$(jq -c --arg home "$HOME" --arg gc "$gc" --arg sk "$sk" --arg hm "$hm" '
         .configuration
         | del(.configFilePath)
         | (.mounts // []) as $m
@@ -217,22 +507,23 @@ devcontainer_agent_override() {
                (. | type) == "string" and
                ((split(",") | index("source=" + $home)) != null or
                 (split(",") | index("target=" + $home)) != null))) as $hasHome
-        | if $hasHome or $gc != "" or $sk != "" then
+        | if $hasHome or $gc != "" or $sk != "" or $hm != "" then
             .mounts = ([ $m[] | select(
                 (. | type) != "string" or
                 ((split(",") | index("source=" + $home)) == null and
                  (split(",") | index("target=" + $home)) == null)) ]
               + (if $gc == "" then [] else [$gc] end)
-              + (if $sk == "" then [] else [$sk] end))
+              + (if $sk == "" then [] else [$sk] end)
+              + (if $hm == "" then [] else [$hm] end))
           else empty
           end
       ' <<<"$rc_json" 2>/dev/null)"
   else
-    stripped="$(HOME="$HOME" GC="$gc" SK="$sk" python3 -c '
+    stripped="$(HOME="$HOME" GC="$gc" SK="$sk" HM="$hm" python3 -c '
 import json, sys, os
 d = json.load(sys.stdin)
 home = os.environ.get("HOME", "")
-extra = [v for v in (os.environ.get("GC", ""), os.environ.get("SK", "")) if v]
+extra = [v for v in (os.environ.get("GC", ""), os.environ.get("SK", ""), os.environ.get("HM", "")) if v]
 cfg = d.get("configuration")
 if isinstance(cfg, dict):
     cfg.pop("configFilePath", None)
@@ -389,17 +680,37 @@ attach_session() {
 }
 
 # Interactive picker fallback when gum is unavailable: numbered list + prompt.
+# Takes the prompt and newline-separated items; prints the chosen item.
 # Returns non-zero if the selection is invalid.
-pick_session() {
-  local sessions="$1" name n i=1
-  while IFS= read -r name; do
-    printf '%d) %s\n' "$i" "$name" >&2
+pick_item() {
+  local prompt="$1" items="$2" item n i=1
+  while IFS= read -r item; do
+    printf '%d) %s\n' "$i" "$item" >&2
     i=$((i+1))
-  done <<< "$sessions"
-  printf 'Select a session [1-%d]: ' "$((i-1))" >&2
+  done <<< "$items"
+  printf '%s [1-%d]: ' "$prompt" "$((i-1))" >&2
   IFS= read -r n
   [[ "$n" =~ ^[0-9]+$ && "$n" -ge 1 && "$n" -lt "$i" ]] || return 1
-  printf '%s\n' "$sessions" | sed -n "${n}p"
+  printf '%s\n' "$items" | sed -n "${n}p"
+}
+
+# Ask which harness to run, for a build run as agent-dev, and set it.
+choose_harness() {
+  local labels=$'OpenCode\nClaude Code\nGitHub Copilot' choice
+  [[ -t 0 && -t 2 ]] \
+    || die "no harness chosen; run opencode-dev, claude-dev or copilot-dev, or run $PROG from a terminal"
+  if has_cmd gum; then
+    # gum renders its TUI to stderr, so don't redirect it away.
+    choice="$(printf '%s\n' "$labels" | gum choose --header 'Select an agent harness' || true)"
+  else
+    choice="$(pick_item 'Select an agent harness' "$labels")" || die "invalid selection"
+  fi
+  case "$choice" in
+    "OpenCode")       set_harness opencode ;;
+    "Claude Code")    set_harness claude ;;
+    "GitHub Copilot") set_harness copilot ;;
+    *)                die "no harness selected" ;;
+  esac
 }
 
 # agent-dev list — list running agent sessions.
@@ -440,7 +751,7 @@ cmd_attach() {
     name="$(printf '%s\n' "$sessions" | gum choose --header 'Select an agent session' || true)"
     [[ -n "$name" ]] || die "no session selected"
   else
-    if ! name="$(pick_session "$sessions")"; then
+    if ! name="$(pick_item 'Select a session' "$sessions")"; then
       die "invalid selection"
     fi
   fi
@@ -463,7 +774,7 @@ remote_user_of() {
 # Start a container if it isn't running; fails if it doesn't exist.
 ensure_running() {
   local id="$1" role="$2" state
-  [[ -n "$id" ]] || die "no $role container for this workspace; rebuild it with: agent-dev <workspace>"
+  [[ -n "$id" ]] || die "no $role container for this workspace; rebuild it with: $PROG <workspace>"
   state="$(docker inspect -f '{{.State.Status}}' "$id")"
   if [[ "$state" != "running" ]]; then
     info "starting $role container ($state)..."
@@ -471,37 +782,109 @@ ensure_running() {
   fi
 }
 
-# Set pane_cmd to the docker exec command that runs a role's pane.
+# The shell to run in a container: zsh, then bash, then plain sh.
+container_shell() {
+  local shell
+  shell="$(docker exec "$1" sh -c \
+    'for s in zsh bash; do p=$(command -v "$s" 2>/dev/null) && { printf "%s" "$p"; exit 0; }; done; printf "/bin/sh"' 2>/dev/null)"
+  printf '%s' "${shell:-/bin/sh}"
+}
+
+# The harness of an agent session. Sessions from before harnesses were
+# recorded ran OpenCode.
+session_harness() {
+  local h
+  h="$(tmux show-options -qv -t "$1" @agent-harness 2>/dev/null)"
+  printf '%s' "${h:-opencode}"
+}
+
+# The container label role of a pane role: the agent pane's container is
+# labelled with its harness.
+container_role() {
+  if [[ "$1" == "agent" ]]; then printf '%s' "$HARNESS"; else printf '%s' "$1"; fi
+}
+
+# Set pane_exec to the docker exec command that runs the agent pane: the
+# harness (or a shell when it isn't installed) with its config environment.
+agent_pane_command() {
+  local cid="$1" user="$2" ws="$3" e
+  pane_exec=(docker exec -it)
+  [[ -n "$user" ]] && pane_exec+=(-u "$user")
+  [[ -n "$ws" ]] && pane_exec+=(-w "$ws")
+  for e in "${AGENT_ENV[@]}"; do
+    pane_exec+=(-e "$e")
+  done
+  if ! docker exec "$cid" sh -c "command -v $AGENT_BIN >/dev/null 2>&1" 2>/dev/null; then
+    pane_exec+=("$cid" "$(container_shell "$cid")" -l)
+    return 0
+  fi
+  case "$HARNESS" in
+    opencode)
+      # With host networking (runArgs: ["--network=host"]) the container shares
+      # the host's loopback, so OpenCode's background service would collide
+      # with the host's own OpenCode service port (49374) and kill the pane.
+      # Only then run --standalone (a private server on a random port).
+      pane_exec+=(-e "OPENCODE_CLI_CONFIG_CONTENT=$OPENCODE_CLI_CONFIG")
+      # Inline config adding the shared instructions. The host's OpenCode finds
+      # them through ~/.claude/CLAUDE.md, which the container doesn't have.
+      if [[ -f "$INSTRUCTIONS_SRC" ]] \
+          && docker exec "$cid" test -d "$OPENCODE_HARNESS_TARGET" 2>/dev/null; then
+        pane_exec+=(-e "OPENCODE_CONFIG_CONTENT={\"instructions\":[\"$OPENCODE_HARNESS_TARGET/$(basename "$INSTRUCTIONS_SRC")\"]}")
+      fi
+      pane_exec+=("$cid" opencode)
+      [[ "$(docker inspect "$cid" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)" == "host" ]] \
+        && pane_exec+=(--standalone)
+      ;;
+    *)
+      pane_exec+=("$cid" "$AGENT_BIN") ;;
+  esac
+}
+
+# Set pane_exec to the docker exec command that runs the terminal pane: a login
+# shell with the SSH + GPG agents forwarded.
+terminal_pane_command() {
+  local cid="$1" user="$2" ws="$3"
+  local runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" ssh_sock=""
+  pane_exec=(docker exec -it)
+  [[ -n "$user" ]] && pane_exec+=(-u "$user")
+  [[ -n "$ws" ]] && pane_exec+=(-w "$ws")
+  pane_exec+=(-e "GNUPGHOME=")
+  if docker exec "$cid" test -d "$runtime_dir" 2>/dev/null; then
+    pane_exec+=(-e "XDG_RUNTIME_DIR=$runtime_dir")
+  fi
+  if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+    case "$SSH_AUTH_SOCK" in
+      "$runtime_dir"/*) ssh_sock="$SSH_AUTH_SOCK" ;;
+      *) ssh_sock="/var/lib/ssh-agent/$(basename "$SSH_AUTH_SOCK")" ;;
+    esac
+    docker exec "$cid" test -S "$ssh_sock" 2>/dev/null && pane_exec+=(-e "SSH_AUTH_SOCK=$ssh_sock")
+  fi
+  pane_exec+=("$cid" "$(container_shell "$cid")" -l)
+}
+
+# Set pane_exec for a pane role of a running session's workspace, syncing the
+# harness configuration first for the agent pane.
 pane_command() {
-  local role="$1" cid="$2" user ws shell
+  local role="$1" cid="$2" workspace="$3" user ws
   ws="/workspaces/$(basename "$workspace")"
   user="$(remote_user_of "$cid")"
   [[ -n "$user" ]] || die "could not determine the remote user of the $role container"
-  if [[ "$role" == "opencode" ]]; then
-    pane_exec=(docker exec -it -u "$user" -w "$ws"
-      -e "OPENCODE_CONFIG_DIR=/opencode-config" -e "XDG_DATA_HOME=/opencode-data"
-      -e "OPENCODE_CLI_CONFIG_CONTENT=$OPENCODE_CLI_CONFIG" "$cid" opencode)
-    [[ "$(docker inspect "$cid" --format '{{.HostConfig.NetworkMode}}')" == "host" ]] && pane_exec+=(--standalone)
+  if [[ "$role" == "agent" ]]; then
+    sync_agent_config "$cid" "$user" "$workspace" "$ws"
+    agent_pane_command "$cid" "$user" "$ws"
   else
-    pane_exec=(docker exec -it -u "$user" -w "$ws" -e "GNUPGHOME=")
-    local runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" ssh_sock=""
-    if docker exec "$cid" test -d "$runtime_dir" 2>/dev/null; then
-      pane_exec+=(-e "XDG_RUNTIME_DIR=$runtime_dir")
-    fi
-    if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
-      case "$SSH_AUTH_SOCK" in
-        "$runtime_dir"/*) ssh_sock="$SSH_AUTH_SOCK" ;;
-        *) ssh_sock="/var/lib/ssh-agent/$(basename "$SSH_AUTH_SOCK")" ;;
-      esac
-      docker exec "$cid" test -S "$ssh_sock" 2>/dev/null && pane_exec+=(-e "SSH_AUTH_SOCK=$ssh_sock")
-    fi
-    shell="$(docker exec "$cid" sh -c \
-      'for s in zsh bash; do p=$(command -v "$s" 2>/dev/null) && { printf "%s" "$p"; exit 0; }; done; printf "/bin/sh"' 2>/dev/null)"
-    pane_exec+=("$cid" "${shell:-/bin/sh}" -l)
+    terminal_pane_command "$cid" "$user" "$ws"
   fi
 }
 
-# agent-dev reconnect [name] — recreate or restart the OpenCode and terminal
+# The id and dead flag of a session's pane with a role. Agent panes of older
+# sessions carry the role "opencode".
+role_pane() {
+  tmux list-panes -t "$1" -F '#{pane_id}|#{@agentwork-role}|#{pane_dead}' \
+    | awk -F'|' -v r="$2" '$2 == r || (r == "agent" && $2 == "opencode") { print $1, $3; exit }'
+}
+
+# agent-dev reconnect [name] — recreate or restart the agent and terminal
 # panes of an agent session, starting their containers first if they stopped.
 cmd_reconnect() {
   has_cmd tmux   || die "tmux not found on PATH"
@@ -515,23 +898,23 @@ cmd_reconnect() {
   elif [[ "$sessions" != *$'\n'* ]]; then
     session="$sessions"
   else
-    die "several agent sessions; name one: agent-dev reconnect <name> ($(tr '\n' ' ' <<<"$sessions" | sed 's/ $//'))"
+    die "several agent sessions; name one: $PROG reconnect <name> ($(tr '\n' ' ' <<<"$sessions" | sed 's/ $//'))"
   fi
 
+  set_harness "$(session_harness "$session")"
   workspace="$(tmux display-message -p -t "$session" '#{session_path}')"
   [[ -d "$workspace" ]] || die "cannot determine the workspace for $session"
 
-  for role in opencode terminal; do
-    read -r pane dead <<<"$(tmux list-panes -t "$session" -F '#{pane_id}|#{@agentwork-role}|#{pane_dead}' \
-      | awk -F'|' -v r="$role" '$2 == r { print $1, $3; exit }')"
+  for role in agent terminal; do
+    read -r pane dead <<<"$(role_pane "$session" "$role")"
     if [[ -n "$pane" && "$dead" != "1" ]]; then
       ok "$role pane is connected"
       continue
     fi
 
-    cid="$(role_container "$role" "$workspace")"
+    cid="$(role_container "$(container_role "$role")" "$workspace")"
     ensure_running "$cid" "$role"
-    pane_command "$role" "$cid"
+    pane_command "$role" "$cid" "$workspace"
 
     if [[ -n "$pane" ]]; then
       tmux respawn-pane -k -t "$pane" "${pane_exec[@]}"
@@ -550,9 +933,7 @@ cmd_reconnect() {
   # Re-apply the layout when panes were added, using the same helper as the
   # attach hook.
   if [[ "$created" == "1" ]]; then
-    local self layout
-    self="$(readlink -f "${BASH_SOURCE[0]}")"
-    layout="$(dirname "$self")/tmux-agent-layout.sh"
+    local layout="$SCRIPT_DIR/tmux-agent-layout.sh"
     if [[ -x "$layout" ]]; then
       window="$session:$(tmux display-message -p -t "$session" '#{window_index}')"
       local w h
@@ -560,13 +941,14 @@ cmd_reconnect() {
       "$layout" "$window" "$w" "$h"
     fi
   fi
-  ok "session '$session' is ready; attach with: agent-dev attach ${session#agent-}"
+  ok "session '$session' is ready; attach with: $PROG attach ${session#agent-}"
 }
 
 # agent-dev adopt <pane> — turn a new host shell pane in an agent session into a
-# container shell. If no OpenCode pane is running in the session, it runs
-# OpenCode instead, so a split brings the agent back after it exits. Run by
-# tmux's after-split-window hook, so splits made any way end up in the container.
+# container shell. If no agent pane is running in the session, it runs the
+# session's agent instead, so a split brings the agent back after it exits. Run
+# by tmux's after-split-window hook, so splits made any way end up in the
+# container.
 cmd_adopt() {
   local pane="${1:-}" session workspace role cid
   [[ -n "$pane" ]] || die "adopt needs a pane id"
@@ -581,17 +963,18 @@ cmd_adopt() {
     return 0
   fi
 
+  set_harness "$(session_harness "$session")"
   role="terminal"
   if ! tmux list-panes -t "$session" -F '#{pane_id}|#{@agentwork-role}|#{pane_dead}' \
-      | awk -F'|' -v p="$pane" '$1 != p && $2 == "opencode" && $3 == "0" { found = 1 } END { exit !found }'; then
-    role="opencode"
+      | awk -F'|' -v p="$pane" '$1 != p && ($2 == "agent" || $2 == "opencode") && $3 == "0" { found = 1 } END { exit !found }'; then
+    role="agent"
   fi
 
   workspace="$(tmux display-message -p -t "$pane" '#{session_path}')"
   [[ -d "$workspace" ]] || die "cannot determine the workspace for pane $pane"
-  cid="$(role_container "$role" "$workspace")"
+  cid="$(role_container "$(container_role "$role")" "$workspace")"
   ensure_running "$cid" "$role"
-  pane_command "$role" "$cid"
+  pane_command "$role" "$cid" "$workspace"
   tmux respawn-pane -k -t "$pane" "${pane_exec[@]}"
   tmux set-option -p -t "$pane" @agentwork-role "$role"
   tmux select-pane -t "$pane" -T "$role"
@@ -604,6 +987,7 @@ WORKSPACE_ARG=""
 CONFIG_ARG=""
 BACKGROUND=0
 REMOVE_CONTAINERS=0
+KILL_CONTAINERS=0
 ATTACH_TARGET=""
 SUB_ARGS=()
 
@@ -624,6 +1008,8 @@ while [[ $# -gt 0 ]]; do
       BACKGROUND=1; shift ;;
     --remove-containers)
       REMOVE_CONTAINERS=1; shift ;;
+    --kill-containers)
+      KILL_CONTAINERS=1; shift ;;
     -h|--help)
       usage; exit 0 ;;
     -*)
@@ -663,12 +1049,27 @@ WORKSPACE_ARG="${WORKSPACE_ARG:-.}"
 
 # --- preflight -------------------------------------------------------------
 
+WORKSPACE_DIR="$(cd "$WORKSPACE_ARG" 2>/dev/null && pwd -P)" \
+  || die "cannot access workspace: $WORKSPACE_ARG"
+
+if [[ "$KILL_CONTAINERS" == "1" ]]; then
+  has_cmd docker || die "docker not found on PATH"
+  mapfile -t workspace_ctrs < <(docker ps -aq --filter "label=devcontainer.local_folder=$WORKSPACE_DIR" 2>/dev/null)
+  if (( ${#workspace_ctrs[@]} )); then
+    info "removing ${#workspace_ctrs[@]} container(s) for workspace '$WORKSPACE_DIR'..."
+    docker rm -f "${workspace_ctrs[@]}" >/dev/null || die "could not remove workspace containers"
+    ok "removed all containers for workspace '$WORKSPACE_DIR'"
+  else
+    info "no containers found for workspace '$WORKSPACE_DIR'"
+  fi
+  exit 0
+fi
+
 has_cmd devcontainer || die "devcontainer CLI not found on PATH"
 has_cmd docker      || die "docker not found on PATH"
 has_cmd tmux        || die "tmux not found on PATH"
 
-WORKSPACE_DIR="$(cd "$WORKSPACE_ARG" 2>/dev/null && pwd -P)" \
-  || die "cannot access workspace: $WORKSPACE_ARG"
+[[ -n "$HARNESS" ]] || choose_harness
 
 if [[ -n "$CONFIG_ARG" ]]; then
   if [[ "$CONFIG_ARG" = /* ]]; then
@@ -688,23 +1089,7 @@ else
 fi
 
 USERNAME="$(id -un)"
-OPENCODE_CONFIG_DIR_HOST="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
-# Per-workspace OpenCode data dir persisted on the host, so each container keeps
-# its OWN SQLite DB (sessions + credentials) across recreation — never shared
-# with the host or other containers. Credentials are copied in with
-# `opencode auth import` rather than by sharing the DB.
-#
-# Layout: .../opencode-containers/<basename>/<hash-of-full-path> so it's easy to
-# find by name, but two workspaces that share a basename don't collide.
-OPENCODE_WORKSPACE_KEY="$(basename "$WORKSPACE_DIR")/$(printf '%s' "$WORKSPACE_DIR" | sha256sum | cut -c1-12)"
-OPENCODE_DATA_PERSIST_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/opencode-containers/${OPENCODE_WORKSPACE_KEY}"
 
-# Resolve the layout helper script next to this script (through symlinks).
-SELF="${BASH_SOURCE[0]}"
-if has_cmd readlink; then
-  SELF="$(readlink -f "$SELF" 2>/dev/null || printf '%s' "$SELF")"
-fi
-SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd -P)"
 LAYOUT_HELPER="$SCRIPT_DIR/tmux-agent-layout.sh"
 [[ -x "$LAYOUT_HELPER" ]] || LAYOUT_HELPER="$SCRIPT_DIR/tmux-agent-layout"
 [[ -x "$LAYOUT_HELPER" ]] || LAYOUT_HELPER=""
@@ -712,12 +1097,12 @@ SETUP_MCP="$SCRIPT_DIR/setup-mcp.sh"
 [[ -x "$SETUP_MCP" ]] || SETUP_MCP="$(command -v setup-mcp 2>/dev/null || true)"
 [[ -x "${SETUP_MCP:-}" ]] || SETUP_MCP=""
 
-# Ensure the OpenCode MCP config points at the network MCP servers before the
-# agent container mounts it (otherwise it would try to invoke them locally).
+# Ensure the harness MCP configs point at the network MCP servers before the
+# agent container gets them (otherwise it would try to invoke them locally).
 if [[ -n "$SETUP_MCP" ]]; then
-  "$SETUP_MCP" --translate-only || warn "OpenCode MCP config translation failed"
+  "$SETUP_MCP" --translate-only || warn "MCP config translation failed"
 else
-  warn "setup-mcp not found; OpenCode MCP config will not be translated"
+  warn "setup-mcp not found; MCP configs will not be translated"
 fi
 
 # --- remove existing containers (--remove-containers) ----------------------
@@ -756,7 +1141,7 @@ if [[ -n "$build_override" ]]; then
   while IFS= read -r img; do
     img_label="$(docker inspect --format '{{index .Config.Labels "agent-dev-build"}}' "$img" 2>/dev/null)"
     [[ "$img_label" == "$build_id" ]] && { found=1; break; }
-  done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep "^vsc-$(basename "$WORKSPACE_DIR")-")
+  done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep "^vsc-$(basename "$WORKSPACE_DIR" | tr '[:upper:]' '[:lower:]')-")
   [[ "$found" == "1" ]] || die "devcontainer build was interrupted — image was not rebuilt"
 else
   if ! devcontainer build --workspace-folder "$WORKSPACE_DIR" --config "$DEVCONTAINER_JSON"; then
@@ -874,66 +1259,50 @@ term_user="$(json_field "$term_json" remoteUser)"
 term_ws="$(json_field "$term_json" remoteWorkspaceFolder)"
 [[ -n "$term_id" ]] || die "could not determine container id for the terminal container"
 
-# 2. Agent container: mounts the OpenCode config dir and a per-container
-#    persistent data dir (NOT the host's shared data dir).
-info "starting OpenCode agent devcontainer..."
-# Pre-create the data dir (not just its parent): OpenCode creates log/ etc. with
-# a non-recursive mkdir, so the data dir itself must already exist.
-mkdir -p "$OPENCODE_DATA_PERSIST_DIR/opencode"
+# 2. Agent container: mounts the harness config and a per-workspace state dir
+#    (NOT the host's own session/data dirs).
+info "starting $AGENT_LABEL agent devcontainer..."
 agent_args=("${common_args[@]}")
-agent_args+=(--id-label "devcontainer.role=opencode")
-agent_args+=(--mount "type=bind,source=$OPENCODE_CONFIG_DIR_HOST,target=/opencode-config")
-agent_args+=(--remote-env "OPENCODE_CONFIG_DIR=/opencode-config")
-agent_args+=(--mount "type=bind,source=$OPENCODE_DATA_PERSIST_DIR,target=/opencode-data")
-agent_args+=(--remote-env "XDG_DATA_HOME=/opencode-data")
+agent_args+=(--id-label "devcontainer.role=$HARNESS")
+agent_mount_args "$WORKSPACE_DIR"
+agent_args+=("${agent_mounts[@]}")
 
-# Ignore any home-directory mount the devcontainer.json declares: OpenCode uses
-# its own isolated config/data dirs, so the host home mount is unwanted here.
+# Ignore any home-directory mount the devcontainer.json declares: the agent uses
+# its own isolated config/state dirs, so the host home mount is unwanted here.
 # We strip it via a generated --override-config instead of editing the file.
 agent_override="$(devcontainer_agent_override)"
 if [[ -n "$agent_override" ]]; then
   agent_args+=(--override-config "$agent_override")
 fi
 
-# If an existing agent container was created before this override existed, it
-# still carries the devcontainer.json's home-dir mount.  Remove it so
-# `devcontainer up` recreates it without the mount (otherwise it would just be
-# reused as-is and the home dir would remain visible).
-if [[ -n "$agent_override" ]]; then
-  existing_agent="$(docker ps -aq --filter "label=devcontainer.role=opencode" --filter "label=devcontainer.local_folder=$WORKSPACE_DIR" 2>/dev/null | head -1)"
-  if [[ -n "$existing_agent" ]] \
-      && docker inspect "$existing_agent" --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qxF "$HOME"; then
-    info "removing existing OpenCode container (still has home-dir mount)"
-    docker rm -f "$existing_agent" >/dev/null 2>&1 || true
-    info "recreating OpenCode container (applies features + postCreateCommand; this can take a while)..."
+# `devcontainer up` reuses an existing container by label, so one created
+# before a mount was added (or with the home-dir mount the override strips)
+# must be removed for it to be recreated with the current mounts.
+existing_agent="$(role_container "$HARNESS" "$WORKSPACE_DIR")"
+if [[ -n "$existing_agent" ]]; then
+  agent_dests="$(docker inspect "$existing_agent" --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)"
+  stale_reason=""
+  if [[ -n "$agent_override" ]] && grep -qxF "$HOME" <<<"$agent_dests"; then
+    stale_reason="still has home-dir mount"
+  elif [[ -f "$HOME/.gitconfig" ]] && ! grep -qxF "$HOME/.gitconfig" <<<"$agent_dests"; then
+    stale_reason="missing git config mount"
+  elif [[ -d "$SKILLS_SRC" ]] && ! grep -qxF "$AGENT_SKILLS_TARGET" <<<"$agent_dests"; then
+    stale_reason="missing skills mount"
+  elif [[ "$HARNESS" == "opencode" && -d "$HARNESS_SRC" ]] \
+      && ! grep -qxF "$OPENCODE_HARNESS_TARGET" <<<"$agent_dests"; then
+    stale_reason="missing harness config mount"
+  elif ! grep -qxF "$AGENT_CONFIG_TARGET" <<<"$agent_dests"; then
+    stale_reason="missing config mount"
   fi
-fi
-
-# Likewise, a container created before the git config mount existed must be
-# recreated so it picks the mount up.
-if [[ -f "$HOME/.gitconfig" ]]; then
-  existing_agent="$(docker ps -aq --filter "label=devcontainer.role=opencode" --filter "label=devcontainer.local_folder=$WORKSPACE_DIR" 2>/dev/null | head -1)"
-  if [[ -n "$existing_agent" ]] \
-      && ! docker inspect "$existing_agent" --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qxF "$HOME/.gitconfig"; then
-    info "removing existing OpenCode container (missing git config mount)"
+  if [[ -n "$stale_reason" ]]; then
+    info "removing existing $AGENT_LABEL container ($stale_reason)"
     docker rm -f "$existing_agent" >/dev/null 2>&1 || true
-    info "recreating OpenCode container (applies features + postCreateCommand; this can take a while)..."
-  fi
-fi
-
-# Likewise for the shared OpenCode skills mount.
-if [[ -d "$(dirname "$SCRIPT_DIR")/opencode/skills" ]]; then
-  existing_agent="$(docker ps -aq --filter "label=devcontainer.role=opencode" --filter "label=devcontainer.local_folder=$WORKSPACE_DIR" 2>/dev/null | head -1)"
-  if [[ -n "$existing_agent" ]] \
-      && ! docker inspect "$existing_agent" --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qxF "$OPENCODE_SKILLS_TARGET"; then
-    info "removing existing OpenCode container (missing skills mount)"
-    docker rm -f "$existing_agent" >/dev/null 2>&1 || true
-    info "recreating OpenCode container (applies features + postCreateCommand; this can take a while)..."
+    info "recreating $AGENT_LABEL container (applies features + postCreateCommand; this can take a while)..."
   fi
 fi
 
 devcontainer_up agent_out "${agent_args[@]}" \
-  || { fail_devcontainer_up "opencode" "$agent_out"; }
+  || { fail_devcontainer_up "$HARNESS" "$agent_out"; }
 [[ -n "$agent_override" ]] && rm -f "$agent_override"
 agent_json="$(extract_json "$agent_out")"
 agent_id="$(json_field "$agent_json" containerId)"
@@ -943,86 +1312,19 @@ agent_ws="$(json_field "$agent_json" remoteWorkspaceFolder)"
 
 # --- decide what to run in each pane ---------------------------------------
 
-# Prefer zsh, then bash, then plain sh for the terminal pane.
-term_shell="$(docker exec "$term_id" sh -c \
-  'for s in zsh bash; do p=$(command -v "$s" 2>/dev/null) && { printf "%s" "$p"; exit 0; }; done; printf "/bin/sh"' 2>/dev/null)"
-term_shell="${term_shell:-/bin/sh}"
-
-have_opencode=0
-if docker exec "$agent_id" sh -c 'command -v opencode >/dev/null 2>&1' 2>/dev/null; then
-  have_opencode=1
-else
-  # Install opencode into the agent container by copying the host binary
-  # (same architecture; the devcontainer image may not ship opencode).
-  host_opencode="$(command -v opencode 2>/dev/null || true)"
-  if [[ -n "$host_opencode" ]] \
-      && docker cp "$host_opencode" "$agent_id":/usr/local/bin/opencode 2>/dev/null \
-      && docker exec "$agent_id" sh -c 'command -v opencode >/dev/null 2>&1' 2>/dev/null; then
-    ok "installed opencode into the agent container from $host_opencode"
-    have_opencode=1
-  else
-    warn "'opencode' is not installed in the agent container and could not be copied; the agent pane will open a shell instead"
-  fi
+if ! ensure_agent_binary "$agent_id"; then
+  warn "'$AGENT_BIN' is not installed in the agent container and could not be installed; the agent pane will open a shell instead"
 fi
-if [[ "$have_opencode" != "1" ]]; then
-  agent_shell="$(docker exec "$agent_id" sh -c \
-    'for s in zsh bash; do p=$(command -v "$s" 2>/dev/null) && { printf "%s" "$p"; exit 0; }; done; printf "/bin/sh"' 2>/dev/null)"
-  agent_shell="${agent_shell:-/bin/sh}"
-fi
+sync_agent_config "$agent_id" "$agent_user" "$WORKSPACE_DIR" "$agent_ws"
 
-# Copy the host's OpenCode credentials into the container's own DB (idempotent:
-# `auth import` skips credentials already present). This is how we avoid sharing
-# the SQLite DB between the host and container servers. Run as the container's
-# remote user so the DB it creates is owned by the same user that runs OpenCode.
-if [[ "$have_opencode" == "1" ]]; then
-  creds="$(opencode auth export --standalone 2>/dev/null || true)"
-  if [[ -n "$creds" && "$creds" != "[]" ]]; then
-    if docker exec -i -u "$agent_user" -e "XDG_DATA_HOME=/opencode-data" -e "OPENCODE_CONFIG_DIR=/opencode-config" \
-        "$agent_id" opencode auth import --standalone <<<"$creds" 2>/dev/null; then
-      ok "imported host OpenCode credentials into the agent container"
-    else
-      warn "failed to import OpenCode credentials into the agent container"
-    fi
-  fi
-fi
-
-# Terminal pane: docker exec a login shell with the SSH + GPG agents forwarded.
-term_exec=(docker exec -it)
-[[ -n "$term_user" ]] && term_exec+=(-u "$term_user")
-[[ -n "$term_ws" ]] && term_exec+=(-w "$term_ws")
-[[ -n "$ssh_auth_sock_fwd" ]] && term_exec+=(-e "SSH_AUTH_SOCK=$ssh_auth_sock_fwd")
-term_exec+=(-e "GNUPGHOME=")
-[[ -d "$runtime_dir" ]] && term_exec+=(-e "XDG_RUNTIME_DIR=$runtime_dir")
-term_exec+=("$term_id" "$term_shell" -l)
-
-# The agent container inherits the devcontainer's network mode.  With host
-# networking (runArgs: ["--network=host"]) it shares the host's loopback, so
-# OpenCode's background service would collide with the host's own OpenCode
-# service port (49374) and kill the pane.  Only in that case run --standalone
-# (a private server on a random port); otherwise keep the normal background
-# service.
-agent_net="$(docker inspect "$agent_id" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)"
-
-# Agent pane: docker exec opencode (or a shell fallback) with the config + data.
-agent_exec=(docker exec -it)
-[[ -n "$agent_user" ]] && agent_exec+=(-u "$agent_user")
-[[ -n "$agent_ws" ]] && agent_exec+=(-w "$agent_ws")
-agent_exec+=(-e "OPENCODE_CONFIG_DIR=/opencode-config")
-agent_exec+=(-e "XDG_DATA_HOME=/opencode-data")
-agent_exec+=(-e "OPENCODE_CLI_CONFIG_CONTENT=$OPENCODE_CLI_CONFIG")
-if [[ "$have_opencode" == "1" ]]; then
-  if [[ "$agent_net" == "host" ]]; then
-    agent_exec+=("$agent_id" opencode --standalone)
-  else
-    agent_exec+=("$agent_id" opencode)
-  fi
-else
-  agent_exec+=("$agent_id" "$agent_shell" -l)
-fi
+terminal_pane_command "$term_id" "$term_user" "$term_ws"
+term_exec=("${pane_exec[@]}")
+agent_pane_command "$agent_id" "$agent_user" "$agent_ws"
+agent_exec=("${pane_exec[@]}")
 
 # --- set up the tmux session -----------------------------------------------
 
-SESSION="agent-$(basename "$WORKSPACE_DIR")"
+SESSION="agent-$HARNESS-$(basename "$WORKSPACE_DIR")"
 
 # Recreate the session fresh so re-running the script gives a clean workspace.
 tmux kill-session -t "$SESSION" 2>/dev/null || true
@@ -1030,6 +1332,7 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 # Run `docker exec` directly as each pane's command (no intermediate shell), so
 # the pane exits when the container exits (or its process ends).
 tmux new-session -d -s "$SESSION" -c "$WORKSPACE_DIR" -n dev "${agent_exec[@]}"
+tmux set-option -t "$SESSION" @agent-harness "$HARNESS"
 
 # The first pane is the agent; split for the terminal pane. Use pane IDs so we
 # don't depend on pane-base-index being 0.
@@ -1037,9 +1340,9 @@ agent_pane="$(tmux list-panes -t "$SESSION" -F '#{pane_id}' | head -1)"
 term_pane="$(tmux split-window -t "$agent_pane" -h -c "$WORKSPACE_DIR" -P -F '#{pane_id}' "${term_exec[@]}")"
 
 # Tag each pane with its role (used by tmux-agent-layout) and a cosmetic title.
-tmux set-option -p -t "$agent_pane" @agentwork-role opencode
+tmux set-option -p -t "$agent_pane" @agentwork-role agent
 tmux set-option -p -t "$term_pane" @agentwork-role terminal
-tmux select-pane -t "$agent_pane" -T opencode
+tmux select-pane -t "$agent_pane" -T "$HARNESS"
 tmux select-pane -t "$term_pane" -T terminal
 
 # The initial layout is applied by the client-attached hook below when the user
@@ -1057,8 +1360,8 @@ if [[ -n "$LAYOUT_HELPER" ]]; then
   tmux set-hook -g client-resized  "run-shell \"$LAYOUT_HELPER #{session_name}:#{window_index} #{client_width} #{client_height}\""
 fi
 
-info "terminal container:  $term_id  ($term_shell)"
-info "opencode container:  $agent_id"
+info "terminal container:  $term_id"
+info "$HARNESS container:  $agent_id"
 
 if [[ "$BACKGROUND" == "1" ]]; then
   ok "tmux session '$SESSION' ready in the background; attach with:"

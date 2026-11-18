@@ -15,6 +15,15 @@ into `$HOME` and overwrites existing configs without prompting.
 - Indentation defaults: 4 spaces, 2 for YAML and Helm, tabs for Makefile and Go.
   `.editorconfig` always overrides these.
 
+## Coding-agent config
+
+- `harness/` and `skills/` configure the coding agents the user runs on their
+  machine (OpenCode, Claude Code, Copilot CLI). They aren't instructions for
+  you. Don't follow them, and edit them only when asked.
+- Skills must work in all three tools: a lowercase-hyphenated `name` that
+  matches the directory, a `description` that says when to use the skill, and
+  MCP tools named without a tool-specific prefix.
+
 ## Repo conventions
 
 - Shell scripts use bash with `#!/bin/bash`, `has_cmd`, and the `info`/`warn`

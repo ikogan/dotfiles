@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the Docker bridge address for MCP servers
+
+[Timer]
+OnStartupSec=20s
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=mcp-rebind.service
+
+[Install]
+WantedBy=timers.target

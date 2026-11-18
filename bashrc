@@ -34,4 +34,4 @@ fi
 . "${DOTFILES_ROOT}/shared-interactive.sh"
 . "$HOME/.cargo/env"
 
-export PATH="/home/kogan/.local/bin:$PATH"
+dotfiles_prepend_path "${HOME}/.local/bin"

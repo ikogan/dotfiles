@@ -112,12 +112,24 @@ skips the restore.
 ## Agentic devcontainer workflow
 
 `agent-dev` builds a devcontainer for a workspace and opens a tmux session with
-two panes — one running OpenCode, one running a shell:
+two panes — one running a coding agent, one running a shell. `install.sh` links
+it under one name per agent harness, and the name you run picks the harness:
+
+| Command | Harness |
+|---------|---------|
+| `opencode-dev` | OpenCode |
+| `claude-dev` | Claude Code |
+| `copilot-dev` | GitHub Copilot CLI |
+| `agent-dev` | asks which one, with `gum` (or a numbered prompt without it) |
+
+Run without a terminal, `agent-dev` fails instead of asking; use one of the
+named commands in scripts.
 
 ```bash
-agent-dev [path/to/workspace] [--config path/to/devcontainer.json] [--background] [--remove-containers]
+claude-dev [path/to/workspace] [--config path/to/devcontainer.json] [--background] [--remove-containers] [--kill-containers]
 agent-dev list
 agent-dev attach [session-name]
+agent-dev reconnect [session-name]
 ```
 
 `--background` (`-b`) creates the tmux session detached and exits without
@@ -125,14 +137,17 @@ attaching (it prints how to attach) — use it when running from inside another
 tmux session or a non-interactive shell so it doesn't steal the current
 terminal.
 
-`--remove-containers` removes the workspace's existing terminal and OpenCode
+`--remove-containers` removes the workspace's existing terminal and agent
 containers before starting, so they are recreated from the freshly built image.
 Use it after updating the base image: `devcontainer up` otherwise reuses the old
-containers.
+containers. `--kill-containers` removes all of the workspace's containers and
+exits.
 
-`agent-dev list` lists running agent sessions. `agent-dev attach` attaches to
-one — with no name it presents a `gum` picker (a numbered prompt if gum isn't
-installed); the name may omit the `agent-` prefix.
+Sessions are named `agent-<harness>-<workspace>`, so different harnesses can
+run on the same workspace side by side (sharing its terminal container).
+`list`, `attach` and `reconnect` work on sessions of every harness, whichever
+name they're run as. `attach` with no name presents a `gum` picker (a numbered
+prompt if gum isn't installed); the name may omit the `agent-` prefix.
 
 The workspace defaults to the current directory and the config defaults to
 `.devcontainer/devcontainer.json`. The image is built once, then two containers
@@ -146,28 +161,56 @@ are started with `devcontainer up`:
   The host agent does the unlocking (pinentry-gnome3 via libsecret on the host);
   a custom `GNUPGHOME` would make gpg look for the agent elsewhere and fail with
   "No pinentry". The pane starts the container's shell.
-- **opencode** container (label `devcontainer.role=opencode`): mounts the host
-  OpenCode config directory (`${XDG_CONFIG_HOME:-~/.config}/opencode`, as
-  `OPENCODE_CONFIG_DIR`) and a **per-workspace** persistent data directory
-  (`${XDG_DATA_HOME:-~/.local/share}/opencode-containers/<basename>/<path-hash>`,
-  as `XDG_DATA_HOME`). Each container keeps its own SQLite DB (so sessions
-  survive container recreation, but the DB is never shared with the host or
-  other containers); the host's credentials are copied in with
-  `opencode auth import`. The pane starts `opencode` (falls back to a shell if
-  opencode is not installed in the container).
+- **agent** container (label `devcontainer.role=<harness>`): doesn't see the
+  host home directory. It gets the host `~/.gitconfig` (read-only), the
+  dotfiles' skills from `skills/` (read-only, at the harness's skills
+  directory), and a **per-workspace** state directory under
+  `${XDG_DATA_HOME:-~/.local/share}/<harness>-containers/<basename>/<path-hash>`,
+  so sessions survive container recreation but are never shared with the host
+  or other containers. The pane starts the harness (or a shell if it can't be
+  installed). How each harness's host configuration gets in:
+
+  | Harness | Config in the container | Synced from the host |
+  |---------|-------------------------|----------------------|
+  | OpenCode | host `~/.config/opencode` mounted as `OPENCODE_CONFIG_DIR`; state dir as `XDG_DATA_HOME` | the config is live; credentials copied with `opencode auth import`; `harness/` mounted read-only and the instructions added with `OPENCODE_CONFIG_CONTENT` |
+  | Claude Code | state dir as `CLAUDE_CONFIG_DIR` | the instructions as `CLAUDE.md`; `settings.json`, `keybindings.json`, `agents/` and `commands/`; `.credentials.json` when the host's is newer; the account, onboarding and MCP server entries of `~/.claude.json`. The workspace is marked trusted. |
+  | Copilot | state dir as `COPILOT_HOME` | the instructions as `copilot-instructions.md`; `settings.json`, `mcp-config.json` and `agents/` |
+
+  Claude Code and Copilot are synced each time the agent pane starts (including
+  `reconnect` and tmux splits). Copilot keeps its host token in the system
+  keyring, which the container can't read, so run `/login` once inside each
+  workspace's container; the token persists in its state directory.
 
 Both containers carry the `devcontainer.local_folder` and
 `devcontainer.config_file` labels. The tmux layout switches automatically
-between side-by-side (wide terminal: terminal on the left, OpenCode on the
-right) and stacked (tall terminal: OpenCode on top, terminal on the bottom);
+between side-by-side (wide terminal: terminal on the left, agent on the
+right) and stacked (tall terminal: agent on top, terminal on the bottom);
 see `tmux-agent-layout` and the `client-resized`/`client-attached` hooks in
 `dotfiles/tmux.conf.local`.
 
-**Assumptions**: `devcontainer`, `docker`, and `tmux` must be on `PATH`. If
-`opencode` isn't in the agent container, `agent-dev` copies the host's
-`opencode` binary into it; SSH agent forwarding and the OpenCode config mount
-rely on the devcontainer mapping the container user to the host UID (the
-default).
+**Assumptions**: `devcontainer`, `docker`, `tmux` and `jq` must be on `PATH`. If
+the harness isn't in the agent container, `agent-dev` copies the host's binary
+into it when it's a native executable (OpenCode, Claude Code's native install,
+Copilot's standalone build), or installs `@github/copilot` with the container's
+`npm`. SSH agent forwarding and the config mounts rely on the devcontainer
+mapping the container user to the host UID (the default).
+
+## Coding-agent skills and instructions
+
+The skills in `skills/` work in OpenCode, Claude Code and Copilot CLI.
+`install.sh` links each one into `~/.claude/skills/`, which Claude Code and
+OpenCode both read, and into `~/.copilot/skills/` for Copilot. `agent-dev`
+mounts the same folder into its agent containers.
+
+If `harness/user-instructions.md` exists, `install.sh` links it to
+`~/.claude/CLAUDE.md` (Claude Code, and OpenCode while
+`~/.config/opencode/AGENTS.md` doesn't exist) and
+`~/.copilot/copilot-instructions.md`. `install.sh` never replaces a real file
+at either path. `agent-dev` gives its agent containers the same file; without
+it, they get the host's own `CLAUDE.md` or `copilot-instructions.md`.
+
+`harness/config.yaml` collects the settings the three tools share (skills, MCP
+servers, startup timeout, and per-tool extras). Nothing reads it yet.
 
 ## MCP servers
 
@@ -176,11 +219,14 @@ default).
 
 - installs user-level systemd units (`~/.config/systemd/user/`) and enables them
   to autostart with the session (when systemd is available),
-- translates any `localhost` in the MCP config to the local docker router IP
-  (the docker0 bridge address, e.g. `172.18.0.1`, read from the interface) so endpoints are reachable from
-  containers,
-- rewrites the OpenCode `mcp` section to connect to those network servers
-  (`type: "remote"`) instead of invoking them locally.
+- translates the MCP endpoints to the current docker bridge gateway (read from
+  `docker0`) so the same address is reachable from both the host and containers,
+- points every installed agent harness at those network servers instead of
+  invoking them locally: OpenCode v2's `mcp.servers` section (`type: "remote"`),
+  Claude Code's user-scope servers (with `claude mcp add-json -s user`), and
+  `mcpServers` in Copilot's `~/.copilot/mcp-config.json` (`type: "http"`).
+  Grafana credentials from an older Copilot config that ran `mcp-grafana`
+  locally are moved to `~/.config/mcp/mcp-grafana.env` first.
 
 Servers:
 
@@ -193,8 +239,8 @@ Grafana credentials (`GRAFANA_URL` / `GRAFANA_SERVICE_ACCOUNT_TOKEN`) are
 written to `~/.config/mcp/mcp-grafana.env` (mode 0600). They are sourced, in
 order, from environment variables, an interactive `gum` prompt, or — for
 non-interactive sessions — a warning with instructions. `agent-dev` runs
-`setup-mcp --translate-only` before starting containers so the OpenCode config
-it mounts is always pointed at the network servers.
+`setup-mcp --translate-only` before starting containers so the configs it
+hands the agent are always pointed at the network servers.
 
 Note that `mcp-grafana` serves unauthenticated on a non-loopback address; see
 the comment in `mcp/mcp-grafana.service` for how to require a bearer token.
@@ -203,6 +249,8 @@ The servers bind to the docker bridge gateway, so a host firewall (ufw)
 blocks container access by default. If ufw is present, `install.sh` checks
 for the rules that allow ports 8180/8280/8380 from the docker bridge subnets
 and, if any are missing, asks for sudo to add them via `install-system.sh`.
-A system unit, `docker-network-refresh.service`, reruns after every docker
-start or restart: it refreshes the ufw rules and re-runs `setup-mcp.sh` as your
-user, so the MCP servers rebind to the current docker gateway.
+A system unit, `docker-network-refresh.service`, refreshes UFW rules after each
+Docker start or restart. A user-level `mcp-rebind.timer` also checks the bridge
+gateway each minute, covering changes after login and the case where the system
+unit runs before the user session exists. `setup-mcp --rebind` updates the host
+and container config and restarts only MCP services whose bound address changed.

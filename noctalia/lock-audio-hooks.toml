@@ -1,0 +1,9 @@
+[hooks]
+session_locked = [
+    'bash "$HOME/.config/noctalia/hooks/lock-audio.sh" lock',
+    "noctalia msg dpms-off",
+]
+session_unlocked = [
+    "noctalia msg dpms-on",
+    'bash "$HOME/.config/noctalia/hooks/lock-audio.sh" unlock',
+]

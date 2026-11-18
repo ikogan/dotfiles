@@ -5,21 +5,7 @@ return {
         lazy = false,
         build = ":TSUpdate",
         config = function()
-            require("nvim-treesitter").install({
-                "bash",
-                "gotmpl",
-                "helm",
-                "jinja",
-                "jinja_inline",
-                "lua",
-                "markdown",
-                "markdown_inline",
-                "python",
-                "query",
-                "vim",
-                "vimdoc",
-                "yaml",
-            })
+            require("nvim-treesitter").install(require("config.parsers"))
 
             vim.api.nvim_create_autocmd("FileType", {
                 group = vim.api.nvim_create_augroup("dotfiles-treesitter", { clear = true }),

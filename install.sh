@@ -364,6 +364,18 @@ else
 fi
 
 if [[ -n "${TEMP_DIR}" ]]; then
+    if download_latest_release "cert-manager/cmctl" "cmctl" "tar.gz" \
+        && extract_download "cmctl" "tar.gz" \
+        && install --mode=0755 "${TEMP_DIR}/cmctl" "$HOME/.local/bin/cmctl"; then
+        info "🎉 Successfully installed cert-manager CLI (cmctl)!"
+    else
+        warn "⚠️  Failed to install cert-manager CLI (cmctl)."
+    fi
+else
+    warn "⚠️  Skipping cert-manager CLI (cmctl) installation because temporary directory is unavailable."
+fi
+
+if [[ -n "${TEMP_DIR}" ]]; then
     if download_latest_release "cli/cli" "gh" "tar.gz" \
         && extract_download "gh" "tar.gz" \
         && install --mode=0755 "${TEMP_DIR}"/gh_*/bin/gh "${HOME}/.local/bin/gh"; then
@@ -442,7 +454,7 @@ elif ! has_gitea_token; then
 fi
 
 if ! has_grafana_key; then
-    warn "⚠️  Remember to add GRAFANA_API_KEY to ~/.copilot/mcp-config.json"
+    warn "⚠️  Remember to add GRAFANA_SERVICE_ACCOUNT_TOKEN to ~/.config/mcp/mcp-grafana.env (setup-mcp prompts for it)"
     warn "   Generate it at: https://grafana.example.com → Administration → Service Accounts → Add service account token"
 fi
 
@@ -525,15 +537,90 @@ for EACH in "${SCRIPTPATH}"/scripts/*; do
     fi
 done
 
-if has_cmd systemctl && systemctl --user show-environment >/dev/null 2>&1; then
-    info "Installing audio-mute-on-lock user service..."
-    mkdir -p "${HOME}/.config/systemd/user"
-    ln -sf "${SCRIPTPATH}/systemd-user/audio-mute-on-lock.service" "${HOME}/.config/systemd/user/audio-mute-on-lock.service"
-    if ! { systemctl --user daemon-reload && systemctl --user enable --now audio-mute-on-lock.service; }; then
-        warn "⚠️  Failed to enable audio-mute-on-lock.service."
+# agent-dev picks its agent harness from the name it's run as.
+for HARNESS in opencode claude copilot; do
+    ln -sf "${SCRIPTPATH}/scripts/agent-dev.sh" "${HOME}/.local/bin/${HARNESS}-dev"
+done
+
+# Link a dotfiles file or directory to a harness config path, leaving a real
+# file or directory there alone.
+link_harness_file() {
+    local src="$1" dest="$2"
+    if [[ -e "${dest}" && ! -L "${dest}" ]]; then
+        warn "⚠️  ${dest} exists and isn't a link; not replacing it."
+        return 0
     fi
+    mkdir -p "$(dirname "${dest}")"
+    ln -sfn "${src}" "${dest}"
+}
+
+# Skills: Claude Code reads ~/.claude/skills, and OpenCode reads that directory
+# too, so it gets no links of its own (they would duplicate the shared ones).
+# Copilot CLI reads ~/.copilot/skills. agent-dev mounts the same directory into
+# its agent containers.
+COPILOT_DIR="${COPILOT_HOME:-${HOME}/.copilot}"
+SKILL_DIRS=("${HOME}/.claude/skills")
+[[ -d "${COPILOT_DIR}" ]] && SKILL_DIRS+=("${COPILOT_DIR}/skills")
+info "Linking agent skills..."
+for EACH in "${SCRIPTPATH}"/skills/*/; do
+    for SKILL_DIR in "${SKILL_DIRS[@]}"; do
+        link_harness_file "${EACH%/}" "${SKILL_DIR}/$(basename "${EACH}")"
+    done
+done
+
+# Global instructions, when harness/user-instructions.md exists. OpenCode reads
+# ~/.claude/CLAUDE.md when ~/.config/opencode/AGENTS.md doesn't exist.
+HARNESS_INSTRUCTIONS="${SCRIPTPATH}/harness/user-instructions.md"
+if [[ -f "${HARNESS_INSTRUCTIONS}" ]]; then
+    info "Linking agent instructions..."
+    link_harness_file "${HARNESS_INSTRUCTIONS}" "${HOME}/.claude/CLAUDE.md"
+    [[ -d "${COPILOT_DIR}" ]] \
+        && link_harness_file "${HARNESS_INSTRUCTIONS}" "${COPILOT_DIR}/copilot-instructions.md"
+    [[ -e "${XDG_CONFIG_HOME:-${HOME}/.config}/opencode/AGENTS.md" ]] \
+        && warn "⚠️  ~/.config/opencode/AGENTS.md exists, so OpenCode won't read the shared instructions."
+fi
+
+# Remove links to dotfiles that moved or were deleted, and the old links in
+# OpenCode's own skills directory, which would duplicate the shared ones.
+HARNESS_LINKS=("${XDG_CONFIG_HOME:-${HOME}/.config}"/opencode/skills/*
+    "${HOME}/.claude/CLAUDE.md" "${COPILOT_DIR}/copilot-instructions.md")
+for SKILL_DIR in "${SKILL_DIRS[@]}"; do
+    HARNESS_LINKS+=("${SKILL_DIR}"/*)
+done
+for EACH in "${HARNESS_LINKS[@]}"; do
+    [[ -L "${EACH}" && "$(readlink "${EACH}")" == "${SCRIPTPATH}"/* ]] || continue
+    if [[ "${EACH}" == */opencode/skills/* || ! -e "${EACH}" ]]; then
+        rm -f "${EACH}"
+    fi
+done
+
+if has_cmd noctalia; then
+    info "Installing Noctalia lock hooks..."
+    mkdir -p "${HOME}/.config/noctalia/hooks"
+    ln -sf "${SCRIPTPATH}/noctalia/lock-audio-hooks.toml" \
+        "${HOME}/.config/noctalia/zz-dotfiles-lock-audio.toml"
+    ln -sf "${SCRIPTPATH}/noctalia/hooks/lock-audio.sh" \
+        "${HOME}/.config/noctalia/hooks/lock-audio.sh"
+    noctalia msg config-reload >/dev/null 2>&1 \
+        || warn "⚠️  Noctalia config reload failed; restart Noctalia to apply lock hooks."
 else
-    warn "⚠️  systemd user session unavailable. Skipping audio-mute-on-lock.service."
+    info "Noctalia not found; skipping Noctalia lock hooks."
+fi
+
+if has_cmd Hyprland || has_cmd hyprctl; then
+    info "Hyprland detected; keeping it out of swap..."
+    if ! systemctl --user show-environment >/dev/null 2>&1; then
+        warn "⚠️  systemd user session unavailable. Skipping Hyprland swap protection."
+    elif systemctl --user is-active --quiet wayland-wm@hyprland.desktop.service; then
+        systemctl --user set-property wayland-wm@hyprland.desktop.service MemorySwapMax=0 MemoryMin=512M \
+            || warn "⚠️  Failed to set Hyprland swap protection."
+    else
+        HYPR_DROPIN="${HOME}/.config/systemd/user.control/wayland-wm@hyprland.desktop.service.d"
+        mkdir -p "${HYPR_DROPIN}"
+        printf '[Service]\nMemorySwapMax=0\n' > "${HYPR_DROPIN}/50-MemorySwapMax.conf"
+        printf '[Service]\nMemoryMin=512M\n' > "${HYPR_DROPIN}/50-MemoryMin.conf"
+        systemctl --user daemon-reload || warn "⚠️  Failed to reload systemd user units."
+    fi
 fi
 
 echo "Installing Oh-My-Tmux..."
@@ -571,6 +658,22 @@ elif has_cmd git; then
         warn "⚠️  Bash-it installation failed."
 else
     warn "⚠️  git is unavailable. Skipping Bash-it installation."
+fi
+
+if [[ -x "${HOME}/.local/bin/cmctl" ]]; then
+    info "Installing cert-manager CLI (cmctl) completions..."
+    if [[ -n "${HAVE_ZSH}" ]] && [[ -d "${HOME}/.oh-my-zsh" ]]; then
+        CMCTL_ZSH_DIR="${HOME}/.oh-my-zsh/cache/completions"
+        if ! { mkdir -p "${CMCTL_ZSH_DIR}" \
+            && "${HOME}/.local/bin/cmctl" completion zsh > "${CMCTL_ZSH_DIR}/_cmctl"; }; then
+            warn "⚠️  Failed to install cmctl zsh completions."
+        fi
+    fi
+    CMCTL_BASH_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/bash-completion/completions"
+    if ! { mkdir -p "${CMCTL_BASH_DIR}" \
+        && "${HOME}/.local/bin/cmctl" completion bash > "${CMCTL_BASH_DIR}/cmctl"; }; then
+        warn "⚠️  Failed to install cmctl bash completions."
+    fi
 fi
 
 if [[ -z "${IN_DEVCONTAINER}" ]] && has_cmd vim && has_cmd git; then
@@ -652,12 +755,15 @@ if [[ -z "${IN_DEVCONTAINER}" ]]; then
             warn "⚠️  Neovim ${nvim_version:-unknown} is too old. Neovim 0.11 or newer is required."
         fi
 
-        echo "Syncing Neovim plugins..."
+        echo "Installing Neovim plugins at the versions in lazy-lock.json..."
+        NVIM_PARSER_CMD="lua require('nvim-treesitter').install(require('config.parsers')):wait(600000)"
         if [[ -n "${HAVE_GUM}" ]]; then
-            gum spin --show-error --title="Syncing Neovim plugins..." -- \
-                nvim --headless "+Lazy! sync" +qa || warn "⚠️  Neovim plugin sync failed."
+            gum spin --show-error --title="Installing Neovim plugins and parsers..." -- \
+                sh -c 'nvim --headless "+Lazy! restore" +qa && nvim --headless "+'"${NVIM_PARSER_CMD}"'" +qa' \
+                || warn "⚠️  Neovim plugin install failed. Open nvim to retry."
         else
-            nvim --headless "+Lazy! sync" +qa >/dev/null 2>&1 || warn "⚠️  Neovim plugin sync failed."
+            { nvim --headless "+Lazy! restore" +qa && nvim --headless "+${NVIM_PARSER_CMD}" +qa; } >/dev/null 2>&1 \
+                || warn "⚠️  Neovim plugin install failed. Open nvim to retry."
         fi
     else
         warn "⚠️  nvim is not installed. Install Neovim 0.11 or newer for the Neovim config."
@@ -677,7 +783,7 @@ fi
 popd &>/dev/null || exit
 
 if [[ -x "${SCRIPTPATH}/scripts/setup-mcp.sh" ]]; then
-    info "Setting up MCP servers (systemd user units + OpenCode config)..."
+    info "Setting up MCP servers (systemd user units + OpenCode, Claude and Copilot configs)..."
     "${SCRIPTPATH}/scripts/setup-mcp.sh" || warn "⚠️  MCP setup completed with warnings."
 fi
 
