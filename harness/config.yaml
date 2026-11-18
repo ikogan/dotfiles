@@ -2,9 +2,8 @@
 # machine: OpenCode, Claude Code and GitHub Copilot CLI. It configures those
 # tools for the user; it is not guidance for an agent editing this repository.
 #
-# Nothing reads this file yet. The MCP servers are currently written into each
-# harness's config by scripts/setup-mcp.sh, and the skills are linked by
-# install.sh.
+# scripts/setup-mcp.sh reads mcp.servers and writes it into each harness's
+# config. The rest isn't read yet: the skills are linked by install.sh.
 #
 # Global instructions aren't configured here. If harness/user-instructions.md
 # exists, install.sh links it to:
@@ -25,7 +24,8 @@ mcp:
   # settings.json (ms, default 30000). Copilot CLI: no equivalent.
   startup_timeout: 45s
 
-  # setup-mcp fills in ${MCP_ROUTER} with the docker bridge IP.
+  # Add a server here to give it to every harness. setup-mcp fills in
+  # ${MCP_ROUTER} with the docker bridge IP; other URLs are used as written.
   #   OpenCode:    mcp.servers.<name>: {type: remote, url}
   #   Claude Code: claude mcp add-json -s user <name> {type: http, url}
   #   Copilot CLI: mcpServers.<name>: {type: http, url, tools: ["*"]}
@@ -33,6 +33,8 @@ mcp:
     grafana:    { url: "http://${MCP_ROUTER}:8280/mcp" }
     kubernetes: { url: "http://${MCP_ROUTER}:8180/mcp" }
     gitea:      { url: "http://${MCP_ROUTER}:8380/mcp" }
+    # Hosted by Atlassian; sign in with OAuth from each harness.
+    atlassian:  { url: "https://mcp.atlassian.com/v2/mcp" }
 
 # Settings for one harness only, merged as written into:
 #   opencode: ~/.config/opencode/opencode.json

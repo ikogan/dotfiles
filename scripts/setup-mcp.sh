@@ -2,9 +2,9 @@
 # vim: set ft=sh ts=2 sw=2 et:
 #
 # setup-mcp — install and enable the user-level systemd services for the MCP
-# servers (kubernetes-mcp-server, mcp-grafana and gitea-mcp), and translate the
-# OpenCode, Claude Code and Copilot CLI MCP configurations to point at them
-# over the network instead of invoking them locally.
+# servers (kubernetes-mcp-server, mcp-grafana and gitea-mcp), and write the
+# servers listed in harness/config.yaml (these plus any hosted ones) into the
+# OpenCode, Claude Code and Copilot CLI MCP configurations.
 #
 # Anything in the MCP configuration that points at "localhost" is translated
 # to the current docker bridge gateway so the endpoints are reachable both
@@ -59,6 +59,7 @@ SYSTEMD_DIR="$HOME/.config/systemd/user"
 OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 COPILOT_DIR="${COPILOT_HOME:-$HOME/.copilot}"
 COPILOT_MCP_CONFIG="$COPILOT_DIR/mcp-config.json"
+HARNESS_CONFIG="$REPO_DIR/harness/config.yaml"
 
 K8S_PORT="8180"      # kubernetes-mcp-server (mcp/kubernetes-mcp-server.toml)
 GRAFANA_PORT="8280"  # mcp-grafana
@@ -126,6 +127,41 @@ wait_for_mcp_servers() {
   return 1
 }
 
+# --- shared server list -----------------------------------------------------
+
+# Find mikefarah/yq and store its path in YQ. Debian and Ubuntu's `yq` package
+# is a different tool (kislyuk/yq) with incompatible flags. ~/.local/bin, where
+# install.sh puts it, isn't on the PATH of the systemd rebind unit.
+YQ=""
+has_yq() {
+  local candidate
+  [[ -n "$YQ" ]] && return 0
+  for candidate in "$(command -v yq 2>/dev/null)" "$HOME/.local/bin/yq"; do
+    if [[ -x "$candidate" ]] && "$candidate" --version 2>/dev/null | grep -q 'mikefarah'; then
+      YQ="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+yq_missing_warning() {
+  warn "mikefarah/yq is not installed, so the agent MCP configs can't be written from $HARNESS_CONFIG."
+  warn "  Re-run install.sh to install it in ~/.local/bin, or: sudo pacman -S go-yq"
+}
+
+# Print the MCP servers from harness/config.yaml as a compact JSON object of
+# name -> URL, with ${MCP_ROUTER} replaced by the docker router IP.
+mcp_servers_json() {
+  local router="$1"
+  has_yq || { yq_missing_warning; return 1; }
+  [[ -f "$HARNESS_CONFIG" ]] || { warn "missing $HARNESS_CONFIG"; return 1; }
+  # shellcheck disable=SC2016
+  MCP_ROUTER="$router" "$YQ" -o json -I 0 \
+    '.mcp.servers | map_values(.url | sub("\$\{MCP_ROUTER\}", strenv(MCP_ROUTER)))' \
+    "$HARNESS_CONFIG"
+}
+
 # --- systemd helpers --------------------------------------------------------
 
 systemd_user_available() {
@@ -188,26 +224,20 @@ ensure_grafana_env() {
 
 # --- opencode config --------------------------------------------------------
 
-# Rewrite the OpenCode v2 `mcp.servers` section to point at the network services.
+# Rewrite the OpenCode v2 `mcp.servers` section to list the shared servers.
 translate_opencode_config() {
-  local router="$1"
-  local grafana_url="http://${router}:${GRAFANA_PORT}/mcp"
-  local k8s_url="http://${router}:${K8S_PORT}/mcp"
-  local gitea_url="http://${router}:${GITEA_PORT}/mcp"
+  local servers="$1"
   local tmp
 
   [[ -f "$OPENCODE_CONFIG" ]] || { warn "no opencode config at $OPENCODE_CONFIG; skipping"; return 0; }
 
   tmp="$(mktemp)"
   if has_cmd jq; then
-    if ! jq --arg g "$grafana_url" --arg k "$k8s_url" --arg t "$gitea_url" \
+    if ! jq --argjson s "$servers" \
       '.mcp = ((.mcp // {})
-        | del(.grafana, .kubernetes, .gitea)
-        | .servers = ((.servers // {}) + {
-            "grafana":    {"type": "remote", "url": $g},
-            "kubernetes": {"type": "remote", "url": $k},
-            "gitea":      {"type": "remote", "url": $t}
-          }))' "$OPENCODE_CONFIG" > "$tmp"; then
+        | del(.[$s | keys[]])
+        | .servers = ((.servers // {}) + ($s | map_values({"type": "remote", "url": .}))))' \
+      "$OPENCODE_CONFIG" > "$tmp"; then
       rm -f "$tmp"
       warn "failed to translate $OPENCODE_CONFIG with jq"
       return 1
@@ -228,19 +258,16 @@ translate_opencode_config() {
 
   # python3 fallback
   if has_cmd python3; then
-    G="$grafana_url" K="$k8s_url" T="$gitea_url" python3 - "$OPENCODE_CONFIG" > "$tmp" <<'PY'
+    S="$servers" python3 - "$OPENCODE_CONFIG" > "$tmp" <<'PY'
 import json, os, sys
 with open(sys.argv[1]) as f:
     cfg = json.load(f)
+shared = json.loads(os.environ["S"])
 mcp = cfg.setdefault("mcp", {})
-for name in ("grafana", "kubernetes", "gitea"):
+for name in shared:
     mcp.pop(name, None)
 servers = mcp.setdefault("servers", {})
-servers.update({
-    "grafana": {"type": "remote", "url": os.environ["G"]},
-    "kubernetes": {"type": "remote", "url": os.environ["K"]},
-    "gitea": {"type": "remote", "url": os.environ["T"]},
-})
+servers.update({name: {"type": "remote", "url": url} for name, url in shared.items()})
 json.dump(cfg, sys.stdout, indent=2)
 PY
     rc=$?
@@ -287,10 +314,10 @@ import_copilot_grafana_key() {
   return 0
 }
 
-# Rewrite the Copilot CLI `mcpServers` section to point at the network services.
+# Rewrite the Copilot CLI `mcpServers` section to list the shared servers.
 # Skipped when Copilot has never been set up on this host.
 translate_copilot_config() {
-  local router="$1" tmp
+  local servers="$1" tmp
   [[ -d "$COPILOT_DIR" ]] || return 0
   has_cmd jq || { warn "jq unavailable; skipping Copilot config translation"; return 0; }
 
@@ -302,14 +329,10 @@ translate_copilot_config() {
   [[ -f "$src" ]] || src=/dev/null
   tmp="$(mktemp)"
   # -s handles a missing (empty) config: `.[0] // {}` starts from an empty one.
-  if ! jq -s --arg g "http://${router}:${GRAFANA_PORT}/mcp" \
-      --arg k "http://${router}:${K8S_PORT}/mcp" \
-      --arg t "http://${router}:${GITEA_PORT}/mcp" \
-      '(.[0] // {}) | .mcpServers = ((.mcpServers // {}) + {
-          "grafana":    {"type": "http", "url": $g, "tools": ["*"]},
-          "kubernetes": {"type": "http", "url": $k, "tools": ["*"]},
-          "gitea":      {"type": "http", "url": $t, "tools": ["*"]}
-        })' "$src" > "$tmp"; then
+  if ! jq -s --argjson s "$servers" \
+      '(.[0] // {}) | .mcpServers = ((.mcpServers // {})
+        + ($s | map_values({"type": "http", "url": ., "tools": ["*"]})))' \
+      "$src" > "$tmp"; then
     rm -f "$tmp"
     warn "failed to translate $COPILOT_MCP_CONFIG with jq"
     return 1
@@ -331,12 +354,12 @@ translate_copilot_config() {
 
 # --- claude config ----------------------------------------------------------
 
-# Register the network services as user-scope Claude Code MCP servers with the
+# Register the shared servers as user-scope Claude Code MCP servers with the
 # `claude mcp` CLI, which owns ~/.claude.json. Servers already pointing at the
 # right URL are left alone, so the rebind timer doesn't rewrite the file every
 # minute. Skipped when Claude Code isn't installed.
 translate_claude_config() {
-  local router="$1" claude_bin claude_json entry name port url current rc=0 changed=0
+  local servers="$1" claude_bin claude_json name url current rc=0 changed=0
   claude_bin="$(command -v claude 2>/dev/null || printf '%s' "$HOME/.local/bin/claude")"
   [[ -x "$claude_bin" ]] || return 0
   has_cmd jq || { warn "jq unavailable; skipping Claude Code config translation"; return 0; }
@@ -346,9 +369,7 @@ translate_claude_config() {
     claude_json="$HOME/.claude.json"
   fi
 
-  for entry in "grafana:$GRAFANA_PORT" "kubernetes:$K8S_PORT" "gitea:$GITEA_PORT"; do
-    name="${entry%%:*}"; port="${entry#*:}"
-    url="http://${router}:${port}/mcp"
+  while IFS=$'\t' read -r name url; do
     current="$(jq -r --arg n "$name" '.mcpServers[$n] // {} | select(.type == "http") | .url // empty' \
       "$claude_json" 2>/dev/null)"
     [[ "$current" == "$url" ]] && continue
@@ -359,7 +380,7 @@ translate_claude_config() {
       warn "failed to register the $name MCP server with Claude Code"
       rc=1
     fi
-  done
+  done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<< "$servers")
   if [[ "$changed" == "1" ]]; then
     info "translated the Claude Code MCP servers in $claude_json"
   elif [[ "$rc" == "0" ]]; then
@@ -368,13 +389,14 @@ translate_claude_config() {
   return "$rc"
 }
 
-# Point the MCP configs of every installed agent harness at the network
-# services.
+# Point the MCP configs of every installed agent harness at the servers listed
+# in harness/config.yaml.
 translate_agent_configs() {
-  local router="$1" rc=0
-  translate_opencode_config "$router" || rc=1
-  translate_claude_config "$router" || rc=1
-  translate_copilot_config "$router" || rc=1
+  local router="$1" servers rc=0
+  servers="$(mcp_servers_json "$router")" || return 1
+  translate_opencode_config "$servers" || rc=1
+  translate_claude_config "$servers" || rc=1
+  translate_copilot_config "$servers" || rc=1
   return "$rc"
 }
 
@@ -455,6 +477,21 @@ main() {
     # gets them; services/credentials are handled by the full install.
     translate_agent_configs "$router"
     return $?
+  fi
+
+  # Check before installing anything, so an interactive run can stop here.
+  if ! has_yq; then
+    yq_missing_warning
+    if [[ -t 0 && -t 1 ]]; then
+      local reply=y
+      if has_cmd gum; then
+        gum confirm --default=false "Continue without updating the agent MCP configs?" || reply=n
+      else
+        read -r -p "Continue without updating the agent MCP configs? [y/N] " reply
+        [[ "$reply" == [yY]* ]] || reply=n
+      fi
+      [[ "$reply" == "n" ]] && die "install mikefarah/yq, then re-run setup-mcp"
+    fi
   fi
 
   info "docker router: $router"

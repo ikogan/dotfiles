@@ -435,6 +435,59 @@ else
     warn "⚠️  Skipping gitea-mcp installation because temporary directory is unavailable."
 fi
 
+# setup-mcp reads harness/config.yaml with mikefarah/yq. Debian and Ubuntu ship
+# a different `yq` (kislyuk/yq), so install mikefarah's into ~/.local/bin
+# unless the system already provides it.
+is_mikefarah_yq() {
+    [[ -x "$1" ]] && "$1" --version 2>/dev/null | grep -q 'mikefarah'
+}
+
+# yq's checksums file lists many hashes per asset; checksums_hashes_order
+# names the columns.
+install_yq() {
+    local release tag arch asset base column expected
+    case "$(uname -m)" in
+        x86_64|amd64) arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        armv6l|armv7l) arch="arm" ;;
+        i386|i686) arch="386" ;;
+        loongarch64) arch="loong64" ;;
+        riscv64|ppc64le|s390x) arch="$(uname -m)" ;;
+        *) warn "⚠️  No yq build for architecture $(uname -m)."; return 1 ;;
+    esac
+    release="$(curl -fsSL https://api.github.com/repos/mikefarah/yq/releases/latest)" || return 1
+    tag="$(grep -m1 '"tag_name"' <<< "$release" | cut -d'"' -f4)"
+    [[ -n "$tag" ]] || return 1
+    asset="yq_${LOCAL_OS}_${arch}"
+    base="https://github.com/mikefarah/yq/releases/download/${tag}"
+    info "🔗 Downloading yq ${tag} for ${LOCAL_OS}/${arch}..."
+    curl -fsSL -o "${TEMP_DIR}/${asset}" "${base}/${asset}" \
+        && curl -fsSL -o "${TEMP_DIR}/yq_checksums" "${base}/checksums" \
+        && curl -fsSL -o "${TEMP_DIR}/yq_checksums_order" "${base}/checksums_hashes_order" \
+        || return 1
+    column="$(grep -nx 'SHA-256' "${TEMP_DIR}/yq_checksums_order" | cut -d: -f1)"
+    [[ -n "$column" ]] || { warn "⚠️  yq checksums don't list SHA-256."; return 1; }
+    expected="$(awk -v a="$asset" -v c="$((column + 1))" '$1 == a { print $c }' "${TEMP_DIR}/yq_checksums")"
+    [[ -n "$expected" ]] || { warn "⚠️  No yq checksum for ${asset}."; return 1; }
+    (cd "${TEMP_DIR}" && printf '%s  %s\n' "$expected" "$asset" | sha256sum -c --quiet -) || return 1
+    chmod 0755 "${TEMP_DIR}/${asset}"
+    is_mikefarah_yq "${TEMP_DIR}/${asset}" \
+        || { warn "⚠️  The downloaded yq doesn't run on this machine."; return 1; }
+    install --mode=0755 "${TEMP_DIR}/${asset}" "$HOME/.local/bin/yq"
+}
+
+if is_mikefarah_yq /usr/bin/yq || is_mikefarah_yq /usr/local/bin/yq; then
+    info "✅ mikefarah/yq is provided by the system."
+elif [[ -n "${TEMP_DIR}" ]]; then
+    if install_yq; then
+        info "🎉 Successfully installed yq!"
+    else
+        warn "⚠️  Failed to install yq; setup-mcp can't update the agent MCP configs without it."
+    fi
+else
+    warn "⚠️  Skipping yq installation because temporary directory is unavailable."
+fi
+
 has_gitea_token() {
     [[ -n "$(secret-tool lookup service gitea-mcp url "https://git.example.com" 2>/dev/null)" ]]
 }

@@ -210,19 +210,24 @@ at either path. `agent-dev` gives its agent containers the same file; without
 it, they get the host's own `CLAUDE.md` or `copilot-instructions.md`.
 
 `harness/config.yaml` collects the settings the three tools share (skills, MCP
-servers, startup timeout, and per-tool extras). Nothing reads it yet.
+servers, startup timeout, and per-tool extras). Only `mcp.servers` is read so
+far, by `setup-mcp`.
 
 ## MCP servers
 
-`install.sh` installs `mcp-grafana` and `kubernetes-mcp-server`, then runs
+`install.sh` installs `mcp-grafana`, `kubernetes-mcp-server`, `gitea-mcp` and,
+unless the system already provides it, mikefarah's `yq` (used to read
+`harness/config.yaml`; Debian and Ubuntu's `yq` package is a different tool)
+into `~/.local/bin`, then runs
 `scripts/setup-mcp.sh` (also linked to `~/.local/bin/setup-mcp`). It:
 
 - installs user-level systemd units (`~/.config/systemd/user/`) and enables them
   to autostart with the session (when systemd is available),
 - translates the MCP endpoints to the current docker bridge gateway (read from
   `docker0`) so the same address is reachable from both the host and containers,
-- points every installed agent harness at those network servers instead of
-  invoking them locally: OpenCode v2's `mcp.servers` section (`type: "remote"`),
+- writes every server in `mcp.servers` of `harness/config.yaml` (with
+  `${MCP_ROUTER}` filled in) into each installed agent harness: OpenCode v2's
+  `mcp.servers` section (`type: "remote"`),
   Claude Code's user-scope servers (with `claude mcp add-json -s user`), and
   `mcpServers` in Copilot's `~/.copilot/mcp-config.json` (`type: "http"`).
   Grafana credentials from an older Copilot config that ran `mcp-grafana`
@@ -234,6 +239,11 @@ Servers:
 |--------|------|----------|
 | kubernetes-mcp-server | 8180 | `http://<router>:8180/mcp` |
 | mcp-grafana | 8280 | `http://<router>:8280/mcp` |
+| gitea-mcp | 8380 | `http://<router>:8380/mcp` |
+| Atlassian (hosted) | — | `https://mcp.atlassian.com/v2/mcp` |
+
+The Atlassian server runs on Atlassian's side, so nothing is installed for it.
+Each harness signs in with OAuth on first use: run `/mcp` in Claude Code.
 
 Grafana credentials (`GRAFANA_URL` / `GRAFANA_SERVICE_ACCOUNT_TOKEN`) are
 written to `~/.config/mcp/mcp-grafana.env` (mode 0600). They are sourced, in
