@@ -488,10 +488,13 @@ else
     warn "⚠️  Skipping yq installation because temporary directory is unavailable."
 fi
 
-if [[ -z "${GITEA_HOST:-}" ]] && [[ -f "${HOME}/.dotfilesrc" ]]; then
-    GITEA_HOST="$(. "${HOME}/.dotfilesrc" >/dev/null 2>&1; printf '%s' "${GITEA_HOST:-}")"
-fi
-GRAFANA_URL="$(sed -n 's/^GRAFANA_URL=//p' "${HOME}/.config/mcp/mcp-grafana.env" 2>/dev/null)"
+dotfilesrc_var() {
+    [[ -f "${HOME}/.dotfilesrc" ]] || return 0
+    (. "${HOME}/.dotfilesrc" >/dev/null 2>&1; printf '%s' "${!1:-}")
+}
+
+GITEA_HOST="${GITEA_HOST:-$(dotfilesrc_var GITEA_HOST)}"
+GRAFANA_URL="${GRAFANA_URL:-$(dotfilesrc_var GRAFANA_URL)}"
 
 has_gitea_token() {
     [[ -n "$(secret-tool lookup service gitea-mcp url "${GITEA_HOST}" 2>/dev/null)" ]]

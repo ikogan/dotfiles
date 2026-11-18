@@ -22,13 +22,15 @@ KUBERNETES_DIAGNOSTIC_SECRET=
 SALT_GIT_ROOT_LOCATIONS=("${HOME}/Documents/Code/salt" "${HOME}/Documents/Code/some-other-place")
 DOTFILES_AUTO_SWITCH_ZSH=1
 GITEA_HOST=https://git.example.com
+GRAFANA_URL=https://grafana.example.com
 RANCHER_URL=https://rancher.example.com
 ```
 
 `GITEA_HOST` is the Gitea server for the gitea-mcp service, and `RANCHER_URL`
 is what the Rancher login reminder tells you to run `rancher login` against.
 Both services read `~/.dotfilesrc` themselves because systemd doesn't load the
-shell config.
+shell config. `GRAFANA_URL` is the Grafana server for mcp-grafana; `setup-mcp`
+copies it into the service's env file (see [MCP servers](#mcp-servers)).
 
 `DOTFILES_AUTO_SWITCH_ZSH=1` makes interactive bash sessions immediately `exec zsh` when zsh is available.
 
@@ -253,9 +255,11 @@ The Atlassian server runs on Atlassian's side, so nothing is installed for it.
 Each harness signs in with OAuth on first use: run `/mcp` in Claude Code.
 
 Grafana credentials (`GRAFANA_URL` / `GRAFANA_SERVICE_ACCOUNT_TOKEN`) are
-written to `~/.config/mcp/mcp-grafana.env` (mode 0600). They are sourced, in
-order, from environment variables, an interactive `gum` prompt, or — for
-non-interactive sessions — a warning with instructions. `agent-dev` runs
+written to `~/.config/mcp/mcp-grafana.env` (mode 0600). The URL comes from
+`GRAFANA_URL` in the environment or `~/.dotfilesrc` and is copied into that
+file on every `setup-mcp` run, so re-run it after changing the URL. The token
+is sourced, in order, from environment variables, an interactive `gum` prompt,
+or — for non-interactive sessions — a warning with instructions. `agent-dev` runs
 `setup-mcp --translate-only` before starting containers so the configs it
 hands the agent are always pointed at the network servers.
 

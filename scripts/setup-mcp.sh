@@ -11,9 +11,11 @@
 # from the host and from containers. A user timer rechecks the address because
 # the bridge can be recreated while the user session is already running.
 #
-# Grafana credentials are not assumed to exist anywhere. When they are missing
-# and the terminal is interactive, gum prompts for them; in non-interactive
-# sessions a warning with instructions is printed instead.
+# The Grafana URL comes from GRAFANA_URL in the environment or ~/.dotfilesrc and
+# is copied into the mcp-grafana env file on every full run. The token is not
+# assumed to exist anywhere. When it is missing and the terminal is
+# interactive, gum prompts for it; in non-interactive sessions a warning with
+# instructions is printed instead.
 #
 # Usage:
 #   setup-mcp                 full install-time setup (configs, units, services)
@@ -27,6 +29,13 @@ die()  { printf 'setup-mcp: error: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'setup-mcp: warning: %s\n' "$*" >&2; }
 info() { printf 'setup-mcp: %s\n' "$*"; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# Print a variable's value from ~/.dotfilesrc without loading the file here.
+dotfilesrc_var() {
+  [[ -f "$HOME/.dotfilesrc" ]] || return 0
+  # shellcheck disable=SC1091
+  (. "$HOME/.dotfilesrc" >/dev/null 2>&1; printf '%s' "${!1:-}")
+}
 
 usage() {
   cat <<'EOF'
@@ -170,45 +179,62 @@ systemd_user_available() {
 
 # --- grafana credentials ----------------------------------------------------
 
+# Write GRAFANA_URL into the env file when it differs from what's there.
+set_grafana_url() {
+  local env_file="$1" gurl="$2"
+  [[ -n "$gurl" ]] || return 0
+  [[ "$(sed -n 's/^GRAFANA_URL=//p' "$env_file")" == "$gurl" ]] && return 0
+  (
+    umask 077
+    { printf 'GRAFANA_URL=%s\n' "$gurl"; grep -v '^GRAFANA_URL=' "$env_file"; } > "$env_file.tmp"
+  ) && mv "$env_file.tmp" "$env_file"
+  info "set GRAFANA_URL=$gurl in $env_file"
+}
+
 # Ensure the Grafana env file exists (consumed by the mcp-grafana unit). The
-# credentials are sourced, in order, from: environment variables, an older
-# Copilot MCP config that ran mcp-grafana locally, an interactive gum prompt,
-# and finally a warning with instructions for non-interactive
-# sessions.
+# URL comes from GRAFANA_URL in the environment or ~/.dotfilesrc and is kept in
+# sync on every run. The token is sourced, in order, from: environment
+# variables, an older Copilot MCP config that ran mcp-grafana locally, an
+# interactive gum prompt, and finally a warning with instructions for
+# non-interactive sessions.
 ensure_grafana_env() {
   local env_file="$CONFIG_DIR/mcp-grafana.env"
-  local gurl="${GRAFANA_URL:-}"
+  local gurl="${GRAFANA_URL:-$(dotfilesrc_var GRAFANA_URL)}"
   local gkey="${GRAFANA_SERVICE_ACCOUNT_TOKEN:-${GRAFANA_API_KEY:-}}"
 
   mkdir -p "$CONFIG_DIR"
 
-  # Already configured: just migrate the deprecated variable name.
+  # Already configured: sync the URL and migrate the deprecated variable name.
   if [[ -s "$env_file" ]]; then
     if grep -q '^GRAFANA_API_KEY=' "$env_file" && ! grep -q '^GRAFANA_SERVICE_ACCOUNT_TOKEN=' "$env_file"; then
       sed -i 's/^GRAFANA_API_KEY=/GRAFANA_SERVICE_ACCOUNT_TOKEN=/' "$env_file"
       info "migrated GRAFANA_API_KEY -> GRAFANA_SERVICE_ACCOUNT_TOKEN in $env_file"
     fi
+    set_grafana_url "$env_file" "$gurl"
     return 0
   fi
 
-  if [[ -z "$gkey" ]] && import_copilot_grafana_key; then
+  if [[ -z "$gkey" ]] && import_copilot_grafana_key "$gurl"; then
     return 0
   fi
 
   # Interactive terminals: prompt with gum for the Grafana host and token.
   if [[ -z "$gkey" ]] && [[ -t 0 && -t 1 ]] && has_cmd gum; then
     info "Grafana MCP server requires Grafana credentials:"
-    gurl="${gurl:-$(gum input --prompt "Grafana URL: " --placeholder "https://grafana.example.com")}"
+    if [[ -z "$gurl" ]]; then
+      gurl="$(gum input --prompt "Grafana URL: " --placeholder "https://grafana.example.com")"
+      [[ -n "$gurl" ]] && info "add GRAFANA_URL=$gurl to ~/.dotfilesrc to keep it across hosts and reinstalls"
+    fi
     gkey="$(gum input --password --prompt "Grafana service account token: " --placeholder "glsa_...")"
   fi
 
   # Non-interactive (or no gum / no token entered): warn with instructions.
   if [[ -z "$gkey" ]]; then
     warn "Grafana credentials are not configured; the Grafana MCP server will not work until they are set."
-    warn "  Set them by exporting (then re-running setup-mcp):"
-    warn "    export GRAFANA_URL=https://grafana.example.com"
+    [[ -n "$gurl" ]] || warn "  Add GRAFANA_URL=https://grafana.example.com to ~/.dotfilesrc."
+    warn "  Set the token by exporting it (then re-running setup-mcp):"
     warn "    export GRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_..."
-    warn "  or by writing those two lines to: $env_file"
+    warn "  or by writing that line to: $env_file"
     return 0
   fi
 
@@ -294,16 +320,17 @@ PY
 # Copy the Grafana credentials from an older Copilot config, which ran
 # mcp-grafana locally with them in its env, into the mcp-grafana env file, so
 # rewriting the Copilot config doesn't lose them. Does nothing when the env file
-# already has a token. Returns 0 only when it wrote the env file.
+# already has a token. A URL passed as $1 (from the environment or
+# ~/.dotfilesrc) wins over the Copilot one. Returns 0 only when it wrote the
+# env file.
 import_copilot_grafana_key() {
-  local env_file="$CONFIG_DIR/mcp-grafana.env" gurl gkey
+  local env_file="$CONFIG_DIR/mcp-grafana.env" gurl="${1:-}" gkey
   grep -qE '^GRAFANA_SERVICE_ACCOUNT_TOKEN=.+' "$env_file" 2>/dev/null && return 1
   [[ -f "$COPILOT_MCP_CONFIG" ]] && has_cmd jq || return 1
   gkey="$(jq -r '.mcpServers.grafana.env // {} | .GRAFANA_SERVICE_ACCOUNT_TOKEN // .GRAFANA_API_KEY // empty' \
     "$COPILOT_MCP_CONFIG" 2>/dev/null)"
   [[ -n "$gkey" ]] || return 1
-  gurl="$(jq -r '.mcpServers.grafana.env.GRAFANA_URL // empty' "$COPILOT_MCP_CONFIG" 2>/dev/null)"
-  gurl="${gurl:-${GRAFANA_URL:-}}"
+  gurl="${gurl:-$(jq -r '.mcpServers.grafana.env.GRAFANA_URL // empty' "$COPILOT_MCP_CONFIG" 2>/dev/null)}"
   mkdir -p "$CONFIG_DIR"
   (
     umask 077
