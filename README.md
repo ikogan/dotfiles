@@ -21,7 +21,14 @@ KUBERNETES_DIAGNOSTIC_IMAGE=
 KUBERNETES_DIAGNOSTIC_SECRET=
 SALT_GIT_ROOT_LOCATIONS=("${HOME}/Documents/Code/salt" "${HOME}/Documents/Code/some-other-place")
 DOTFILES_AUTO_SWITCH_ZSH=1
+GITEA_HOST=https://git.example.com
+RANCHER_URL=https://rancher.example.com
 ```
+
+`GITEA_HOST` is the Gitea server for the gitea-mcp service, and `RANCHER_URL`
+is what the Rancher login reminder tells you to run `rancher login` against.
+Both services read `~/.dotfilesrc` themselves because systemd doesn't load the
+shell config.
 
 `DOTFILES_AUTO_SWITCH_ZSH=1` makes interactive bash sessions immediately `exec zsh` when zsh is available.
 

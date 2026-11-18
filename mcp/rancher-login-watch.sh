@@ -7,11 +7,19 @@
 # about every 30 seconds, so a notification is sent at the start of each
 # failure episode and re-armed after a gap longer than REARM_SECONDS.
 
+#
+# The login command uses RANCHER_URL (or RANCHER_LOGIN_CMD for the whole
+# command), set in the environment or in ~/.dotfilesrc.
+
 set -uo pipefail
+
+if [[ -z "${RANCHER_URL:-}${RANCHER_LOGIN_CMD:-}" && -f "$HOME/.dotfilesrc" ]]; then
+  . "$HOME/.dotfilesrc"
+fi
 
 UNIT="kubernetes-mcp-server"
 PATTERN="the server has asked for the client to provide credentials"
-LOGIN_CMD="${RANCHER_LOGIN_CMD:-rancher login https://rancher.example.com}"
+LOGIN_CMD="${RANCHER_LOGIN_CMD:-rancher login ${RANCHER_URL:-<RANCHER_URL>}}"
 REARM_SECONDS=120
 
 last_seen=0

@@ -1,0 +1,17 @@
+# Local secrets and per-host settings. The real files live outside the repo;
+# these patterns stop a stray copy from being committed.
+*.env
+!*.env.example
+.env*
+!.env.example
+.dotfilesrc
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Personal agent instructions linked by install.sh, if present.
+harness/user-instructions.md
+
+# Local Claude Code overrides.
+.claude/settings.local.json

@@ -488,8 +488,13 @@ else
     warn "⚠️  Skipping yq installation because temporary directory is unavailable."
 fi
 
+if [[ -z "${GITEA_HOST:-}" ]] && [[ -f "${HOME}/.dotfilesrc" ]]; then
+    GITEA_HOST="$(. "${HOME}/.dotfilesrc" >/dev/null 2>&1; printf '%s' "${GITEA_HOST:-}")"
+fi
+GRAFANA_URL="$(sed -n 's/^GRAFANA_URL=//p' "${HOME}/.config/mcp/mcp-grafana.env" 2>/dev/null)"
+
 has_gitea_token() {
-    [[ -n "$(secret-tool lookup service gitea-mcp url "https://git.example.com" 2>/dev/null)" ]]
+    [[ -n "$(secret-tool lookup service gitea-mcp url "${GITEA_HOST}" 2>/dev/null)" ]]
 }
 
 has_grafana_key() {
@@ -501,14 +506,16 @@ if ! has_cmd secret-tool; then
     warn "⚠️  secret-tool is not installed, so the gitea-mcp token can't be checked or read."
     warn "   Install libsecret's command-line tools with your package manager:"
     warn "   Arch/CachyOS: sudo pacman -S libsecret    Debian/Ubuntu: sudo apt install libsecret-tools"
+elif [[ -z "${GITEA_HOST}" ]]; then
+    warn "⚠️  Set GITEA_HOST in ~/.dotfilesrc so gitea-mcp knows which Gitea server to use."
 elif ! has_gitea_token; then
     warn "⚠️  Remember to store the Gitea token for gitea-mcp in the keyring:"
-    warn "   secret-tool store --label='gitea-mcp token' service gitea-mcp url https://git.example.com"
+    warn "   secret-tool store --label='gitea-mcp token' service gitea-mcp url ${GITEA_HOST}"
 fi
 
 if ! has_grafana_key; then
     warn "⚠️  Remember to add GRAFANA_SERVICE_ACCOUNT_TOKEN to ~/.config/mcp/mcp-grafana.env (setup-mcp prompts for it)"
-    warn "   Generate it at: https://grafana.example.com → Administration → Service Accounts → Add service account token"
+    warn "   Generate it at: ${GRAFANA_URL:-your Grafana} → Administration → Service Accounts → Add service account token"
 fi
 
 if [[ "$(uname -o)" = "Android" ]]; then
