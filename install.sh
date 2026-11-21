@@ -659,6 +659,9 @@ done
 
 if has_cmd noctalia; then
     info "Installing Noctalia lock hooks..."
+    for EACH in wpctl pw-dump jq; do
+        has_cmd "${EACH}" || warn "⚠️  ${EACH} not found; muting audio on lock won't work."
+    done
     mkdir -p "${HOME}/.config/noctalia/hooks"
     ln -sf "${SCRIPTPATH}/noctalia/lock-audio-hooks.toml" \
         "${HOME}/.config/noctalia/zz-dotfiles-lock-audio.toml"
