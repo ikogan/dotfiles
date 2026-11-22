@@ -1,0 +1,20 @@
+[Unit]
+Description=Seven-day stutter investigation telemetry recorder
+Documentation=file:%h/.local/share/doc/stutter-watch/README.md
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/stutter-watch run
+Restart=on-failure
+RestartSec=10s
+Nice=10
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUWeight=20
+IOWeight=20
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

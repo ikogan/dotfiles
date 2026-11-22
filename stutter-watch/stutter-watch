@@ -1,0 +1,1848 @@
+#!/usr/bin/env python3
+"""Low-overhead, seven-day desktop stutter telemetry recorder (stdlib only)."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import glob
+import json
+import os
+import platform
+import re
+import select
+import shutil
+import threading
+import signal
+import subprocess
+import sys
+import tarfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+HOME = Path.home()
+STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "stutter-watch"
+SESSIONS = STATE / "sessions"
+ACTIVE = STATE / "active-session"
+LOCK = STATE / "recorder.lock"
+SAMPLE_SECONDS = 5
+DURATION_SECONDS = 7 * 24 * 60 * 60
+MAX_LOG_BYTES = 2 * 1024 * 1024 * 1024
+HZ = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
+CPU_COUNT = os.cpu_count() or 1
+STOP = False
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+# Held (shared flock) by the /usr/local/bin/game-performance wrapper while a game runs.
+GAME_LOCK = RUNTIME_DIR / "game-active.lock"
+# Desktop-stack processes whose CPU, RSS and swap are recorded every sample.
+DESKTOP_PROCS = ("Hyprland", "noctalia", "Xwayland", "hyprpaper", "quickshell", "qs")
+PROBE_FILE = STATE / "probe.json"
+NOTES = STATE / "NOTES.md"            # host-specific investigation notes, kept out of the repo
+PROBE_SECONDS = 120
+FRAMETIMES = STATE / "frametimes"          # MangoHud output_folder (see ~/.config/MangoHud/stutter-watch.conf)
+PENDING_REVIEW = STATE / "pending-review.json"
+PROMPTS_OFF = STATE / "prompts-disabled"
+FRAMETIME_KEEP_DAYS = 14
+# Flatpak apps that list ~/.local/state as "persistent" (GeForce NOW) see a private copy of it,
+# so MangoHud's output_folder lands under ~/.var/app/<id>/.local/state/... on the host.
+FRAME_DIRS = (FRAMETIMES, Path.home() / ".var/app/com.nvidia.geforcenow/.local/state/stutter-watch/frametimes")
+
+# --- Stutter detector tuning (first guesses; every detection is logged so these can be tuned) ---
+# Kernel PSI triggers: (stall microseconds within a 2 s window). Unprivileged
+# triggers must use windows that are multiples of 2 s.
+PSI_WINDOW_US = 2_000_000
+PSI_DESKTOP_US = 100_000      # Hyprland's service cgroup (compositor, shell, Xwayland, hyprpaper)
+PSI_GLOBAL_MEM_US = 150_000   # whole system waiting on memory
+PSI_GAME_MEM_US = 100_000     # Steam's cgroup (games launched from Steam live here)
+PSI_GAME_CPU_US = 300_000
+# Frame-time episodes (MangoHud log, every frame):
+HITCH_MIN_MS = 25.0           # a frame must take at least this long to count as a hitch...
+HITCH_FACTOR = 2.0            # ...and be this many times slower than the recent median
+EPISODE_GAP_S = 3.0           # hitches closer together than this belong to one episode
+EPISODE_MIN_HITCHES = 4       # report an episode with >= this many hitches...
+EPISODE_BIG_HITCH_MS = 100.0  # ...or any single frame at least this slow
+LOG_WARMUP_S = 20.0           # ignore the first seconds of a log (loading, shader compile)
+DESKTOP_PROMPT_COOLDOWN_S = 15 * 60
+REVIEW_MAX_ITEMS = 5
+STW = str(Path(__file__).resolve())
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def read_text(path: str | Path, default: str = "") -> str:
+    try:
+        return Path(path).read_text(errors="replace").strip()
+    except (OSError, ValueError):
+        return default
+
+
+def read_int(path: str | Path) -> int | None:
+    text = read_text(path)
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def command(args: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=False)
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, "", str(exc)
+
+
+def unit_names(output: str) -> list[str]:
+    names = []
+    for line in output.splitlines():
+        for token in line.split():
+            if token.endswith((".service", ".socket", ".target", ".timer", ".mount", ".scope")):
+                names.append(token)
+                break
+    return names
+
+
+def json_command(args: list[str], timeout: float = 2.0):
+    rc, out, err = command(args, timeout)
+    if rc == 0:
+        try:
+            return json.loads(out), None
+        except json.JSONDecodeError as exc:
+            return None, f"invalid JSON: {exc}"
+    return None, err or f"exit status {rc}"
+
+
+def append_json(path: Path, obj: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(obj, separators=(",", ":"), ensure_ascii=False) + "\n")
+        f.flush()
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def session_dir() -> Path | None:
+    sid = read_text(ACTIVE)
+    if not sid or "/" in sid or sid.startswith("."):
+        return None
+    path = SESSIONS / sid
+    return path if path.is_dir() else None
+
+
+def load_manifest(path: Path) -> dict:
+    try:
+        return json.loads((path / "manifest.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_manifest(path: Path, manifest: dict) -> None:
+    tmp = path / "manifest.json.tmp"
+    tmp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(path / "manifest.json")
+
+
+def start_session() -> Path:
+    SESSIONS.mkdir(parents=True, exist_ok=True)
+    sid = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    path = SESSIONS / sid
+    path.mkdir()
+    now = time.time()
+    guide = HOME / ".local/share/doc/stutter-watch/README.md"
+    if guide.is_file():
+        shutil.copyfile(guide, path / "README.md")
+    manifest = {
+        "session_id": sid,
+        "started_at": now_iso(),
+        "started_unix": now,
+        "deadline_unix": now + DURATION_SECONDS,
+        "duration_seconds": DURATION_SECONDS,
+        "sample_interval_seconds": SAMPLE_SECONDS,
+        "status": "recording",
+        "privacy": "No command-line arguments, document contents, or network payloads are recorded. Process names, PIDs, cgroup unit names, hardware metrics, and selected kernel warnings are recorded.",
+    }
+    save_manifest(path, manifest)
+    ACTIVE.write_text(sid + "\n")
+    append_json(path / "events.jsonl", {"type": "session_started", "timestamp": now_iso(), "deadline_unix": manifest["deadline_unix"]})
+    return path
+
+
+def statvfs(path: str) -> dict | None:
+    try:
+        st = os.statvfs(path)
+        unit = st.f_frsize
+        return {"total_bytes": st.f_blocks * unit, "free_bytes": st.f_bavail * unit, "used_bytes": (st.f_blocks - st.f_bfree) * unit}
+    except OSError:
+        return None
+
+
+def inventory() -> dict:
+    release = {}
+    for line in read_text("/etc/os-release").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            release[k] = v.strip('"')
+    cpu_model = ""
+    for line in read_text("/proc/cpuinfo").splitlines():
+        if line.startswith("model name"):
+            cpu_model = line.partition(":")[2].strip()
+            break
+    block_devices = {}
+    for dev in Path("/sys/block").glob("*"):
+        name = dev.name
+        if name.startswith(("loop", "ram")):
+            continue
+        block_devices[name] = {
+            "model": read_text(dev / "device/model") or read_text(dev / "device/name") or None,
+            "size_512_sectors": read_int(dev / "size"),
+            "rotational": read_int(dev / "queue/rotational"),
+            "device_mapper_name": read_text(dev / "dm/name") or None,
+        }
+    gpus = []
+    for card in Path("/sys/class/drm").glob("card[0-9]*"):
+        if not re.fullmatch(r"card\d+", card.name):
+            continue
+        device = card / "device"
+        try:
+            driver = (device / "driver").resolve().name
+        except OSError:
+            driver = None
+        gpus.append({
+            "card": card.name,
+            "driver": driver,
+            "vendor_id": read_text(device / "vendor") or None,
+            "device_id": read_text(device / "device") or None,
+            "pci_slot": device.resolve().name,
+        })
+    mounts = []
+    try:
+        for line in Path("/proc/mounts").read_text().splitlines():
+            cols = line.split()
+            if len(cols) >= 4 and (cols[2] == "btrfs" or cols[1] in ("/", "/home", "/var/cache", "/var/log", "/var/tmp")):
+                mounts.append({"source": cols[0], "target": cols[1], "fstype": cols[2], "options": cols[3]})
+    except OSError:
+        pass
+    services = {"system": [], "user": []}
+    timers = {"system": [], "user": []}
+    for scope in services:
+        args = ["systemctl"] + (["--user"] if scope == "user" else []) + ["list-units", "--type=service", "--state=running", "--no-legend", "--no-pager"]
+        rc, out, _ = command(args, 5)
+        if rc == 0:
+            services[scope] = [line.split()[0] for line in out.splitlines() if line.split()]
+        args = ["systemctl"] + (["--user"] if scope == "user" else []) + ["list-timers", "--all", "--no-legend", "--no-pager"]
+        rc, out, _ = command(args, 5)
+        if rc == 0:
+            timers[scope] = [line.strip() for line in out.splitlines() if line.strip()]
+    failed = {}
+    for scope in ("system", "user"):
+        args = ["systemctl"] + (["--user"] if scope == "user" else []) + ["--failed", "--no-legend", "--no-pager"]
+        rc, out, _ = command(args, 5)
+        failed[scope] = unit_names(out) if rc == 0 else None
+    packages = {}
+    if shutil.which("pacman"):
+        names = ["linux-cachyos", "mesa", "intel-gpu-tools", "gputop", "btrfs-progs", "zram-generator", "power-profiles-daemon", "intel-lpmd", "ananicy-cpp", "scx-scheds"]
+        rc, out, _ = command(["pacman", "-Q", *names], 8)
+        if out:
+            packages = {line.split()[0]: line.split()[1] for line in out.splitlines() if len(line.split()) >= 2}
+    variety_conf = {}
+    for line in read_text(HOME / ".config/variety/variety.conf").splitlines():
+        if line.startswith(("change_enabled =", "change_interval =", "wallpaper_auto_rotate =", "stats_enabled =")):
+            key, _, val = line.partition("=")
+            variety_conf[key.strip()] = val.strip()
+    btrfs = {}
+    for key, args in {
+        "device_stats": ["btrfs", "device", "stats", "/"],
+        "filesystem_usage": ["btrfs", "filesystem", "usage", "-b", "/"],
+    }.items():
+        rc, out, err = command(args, 8)
+        btrfs[key] = out if rc == 0 else (out + ("\n" + err if err else ""))
+    return {
+        "captured_at": now_iso(),
+        "hostname": platform.node(),
+        "os": release,
+        "kernel": platform.release(),
+        "architecture": platform.machine(),
+        "cpu_model": cpu_model,
+        "logical_cpu_count": CPU_COUNT,
+        "boot_id": read_text("/proc/sys/kernel/random/boot_id"),
+        "block_devices": block_devices,
+        "gpus": gpus,
+        "mounts": mounts,
+        "running_services": services,
+        "scheduled_timers": timers,
+        "failed_services": failed,
+        "packages": packages,
+        "variety_config": variety_conf,
+        "btrfs_baseline": btrfs,
+        "gpu_tools": {name: shutil.which(name) for name in ("gputop", "intel_gpu_top")},
+        "privacy_note": "Process command lines and file contents are not collected. Current wallpaper is recorded by basename and file metadata only.",
+    }
+
+
+def parse_proc_stat() -> dict:
+    out = {"cpus": {}, "misc": {}}
+    try:
+        lines = Path("/proc/stat").read_text().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        fields = line.split()
+        if not fields:
+            continue
+        if re.fullmatch(r"cpu\d*", fields[0]):
+            vals = [int(x) for x in fields[1:]]
+            out["cpus"][fields[0]] = vals
+        elif fields[0] in ("ctxt", "intr", "softirq", "processes", "procs_running", "procs_blocked"):
+            try:
+                out["misc"][fields[0]] = int(fields[1])
+            except (IndexError, ValueError):
+                pass
+    return out
+
+
+def cpu_percentages(cur: dict, prev: dict | None) -> dict:
+    if not prev:
+        return {}
+    result = {}
+    for name, vals in cur["cpus"].items():
+        old = prev.get("cpus", {}).get(name)
+        if not old or len(vals) < 8:
+            continue
+        n = min(len(vals), len(old))
+        delta = [max(0, vals[i] - old[i]) for i in range(n)]
+        # Guest and guest_nice are already included in user and nice.
+        total = sum(delta[:8])
+        if not total:
+            continue
+        keys = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guest_nice")
+        result[name] = {keys[i]: round(100 * delta[i] / total, 2) for i in range(min(n, len(keys)))}
+    return result
+
+
+def meminfo() -> dict:
+    out = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, _, rest = line.partition(":")
+            vals = rest.split()
+            if vals:
+                out[key] = int(vals[0]) * (1024 if len(vals) > 1 and vals[1] == "kB" else 1)
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def vmstat() -> dict:
+    out = {}
+    try:
+        for line in Path("/proc/vmstat").read_text().splitlines():
+            fields = line.split()
+            if len(fields) == 2 and fields[0] in {
+                "pswpin", "pswpout", "pgmajfault", "pgfault", "pgscan_kswapd", "pgscan_direct",
+                "pgsteal_kswapd", "pgsteal_direct", "compact_stall", "compact_fail", "oom_kill",
+                "compact_success", "compact_daemon_wake", "allocstall_normal", "allocstall_movable",
+                "thp_fault_alloc", "thp_fault_fallback", "thp_collapse_alloc",
+                "workingset_refault_anon", "workingset_refault_file",
+            }:
+                out[fields[0]] = int(fields[1])
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def psi() -> dict:
+    result = {}
+    for resource in ("cpu", "memory", "io"):
+        data = {}
+        try:
+            for line in Path(f"/proc/pressure/{resource}").read_text().splitlines():
+                fields = line.split()
+                if fields:
+                    key = fields[0]
+                    vals = {}
+                    for part in fields[1:]:
+                        if "=" in part:
+                            k, v = part.split("=", 1)
+                            try:
+                                vals[k] = float(v) if k.startswith("avg") else int(v)
+                            except ValueError:
+                                pass
+                    data[key] = vals
+        except OSError:
+            pass
+        if data:
+            result[resource] = data
+    return result
+
+
+def diskstats() -> dict:
+    result = {}
+    try:
+        lines = Path("/proc/diskstats").read_text().splitlines()
+    except OSError:
+        return result
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 14:
+            continue
+        name = fields[2]
+        if name.startswith(("loop", "ram")):
+            continue
+        try:
+            values = [int(x) for x in fields[3:14]]
+        except ValueError:
+            continue
+        result[name] = {
+            "reads_completed": values[0], "sectors_read_512": values[2], "read_ms": values[3],
+            "writes_completed": values[4], "sectors_written_512": values[6], "write_ms": values[7],
+            "io_in_progress": values[8], "io_ms": values[9], "weighted_io_ms": values[10],
+        }
+    return result
+
+
+def disk_rates(cur: dict, prev: dict | None, dt: float) -> dict:
+    if not prev or dt <= 0:
+        return {}
+    result = {}
+    for name, val in cur.items():
+        old = prev.get(name)
+        if not old:
+            continue
+        def rate(key, factor=1.0):
+            return round(max(0, val[key] - old.get(key, val[key])) * factor / dt, 3)
+        result[name] = {
+            "read_bytes_per_sec": rate("sectors_read_512", 512),
+            "write_bytes_per_sec": rate("sectors_written_512", 512),
+            "reads_per_sec": rate("reads_completed"), "writes_per_sec": rate("writes_completed"),
+            "io_ms_per_sec": rate("io_ms"), "weighted_io_ms_per_sec": rate("weighted_io_ms"),
+            "in_progress": val["io_in_progress"],
+        }
+    return result
+
+
+def process_snapshot() -> dict:
+    result = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            raw = (entry / "stat").read_text()
+            close = raw.rfind(")")
+            if close < 0:
+                continue
+            name = raw[raw.find("(") + 1:close]
+            fields = raw[close + 2:].split()  # begins at proc stat field 3 (state)
+            if len(fields) < 22:
+                continue
+            state = fields[0]
+            cpu_ticks = int(fields[11]) + int(fields[12])
+            start_ticks = int(fields[19])
+            rss = max(0, int(fields[21])) * PAGE_SIZE
+            io = {}
+            try:
+                for line in (entry / "io").read_text().splitlines():
+                    key, _, value = line.partition(":")
+                    if key in ("read_bytes", "write_bytes"):
+                        io[key] = int(value.strip())
+            except (OSError, ValueError):
+                pass
+            cgroup = ""
+            try:
+                cg = (entry / "cgroup").read_text().splitlines()
+                if cg:
+                    cgroup = cg[-1].rsplit(":", 1)[-1].rsplit("/", 1)[-1][:100]
+            except OSError:
+                pass
+            result[str(pid)] = {"name": name[:80], "state": state, "cpu_ticks": cpu_ticks, "start_ticks": start_ticks, "rss_bytes": rss, "io": io, "cgroup": cgroup}
+        except (OSError, ValueError, ProcessLookupError):
+            continue
+    return result
+
+
+def process_top(cur: dict, prev: dict | None, dt: float, limit: int = 10) -> list:
+    rows = []
+    for pid, proc in cur.items():
+        old = (prev or {}).get(pid)
+        if not old or old.get("start_ticks") != proc["start_ticks"]:
+            continue
+        cpu_ticks = max(0, proc["cpu_ticks"] - old["cpu_ticks"])
+        cpu_one = 100 * cpu_ticks / HZ / max(dt, 0.001)
+        io = proc.get("io", {})
+        old_io = old.get("io", {})
+        read_bps = max(0, io.get("read_bytes", 0) - old_io.get("read_bytes", 0)) / max(dt, 0.001)
+        write_bps = max(0, io.get("write_bytes", 0) - old_io.get("write_bytes", 0)) / max(dt, 0.001)
+        if cpu_one > 0.05 or read_bps + write_bps > 4096:
+            rows.append({
+                "pid": int(pid), "name": proc["name"], "state": proc["state"], "cgroup": proc["cgroup"],
+                "cpu_pct_one_core": round(cpu_one, 2), "cpu_pct_machine": round(cpu_one / CPU_COUNT, 2),
+                "rss_bytes": proc["rss_bytes"], "read_bytes_per_sec": round(read_bps),
+                "write_bytes_per_sec": round(write_bps),
+            })
+    rows.sort(key=lambda p: (p["cpu_pct_one_core"] * 10 + (p["read_bytes_per_sec"] + p["write_bytes_per_sec"]) / 1e6), reverse=True)
+    return rows[:limit]
+
+
+def process_top_rss(cur: dict, limit: int = 8) -> list:
+    rows = [
+        {"pid": int(pid), "name": proc["name"], "state": proc["state"], "cgroup": proc["cgroup"], "rss_bytes": proc["rss_bytes"]}
+        for pid, proc in cur.items() if proc["rss_bytes"] > 1024 * 1024
+    ]
+    rows.sort(key=lambda proc: proc["rss_bytes"], reverse=True)
+    return rows[:limit]
+
+
+def zram_stats() -> dict:
+    base = Path("/sys/block/zram0")
+    result = {}
+    for file, keys in (("mm_stat", ("orig_data_bytes", "compressed_data_bytes", "mem_used_total_bytes", "mem_limit_bytes", "mem_used_max_bytes", "same_pages", "pages_compacted", "huge_pages", "huge_pages_since")),
+                       ("io_stat", ("failed_reads", "failed_writes", "invalid_io", "notify_free")),
+                       ("bd_stat", ("backing_reads", "backing_writes", "backing_read_bytes", "backing_write_bytes"))):
+        vals = read_text(base / file).split()
+        if vals:
+            item = {}
+            for i, key in enumerate(keys):
+                try:
+                    item[key] = int(vals[i])
+                except (IndexError, ValueError):
+                    break
+            result[file] = item
+    result["disksize_bytes"] = read_int(base / "disksize")
+    result["algorithm"] = read_text(base / "comp_algorithm")
+    return result
+
+
+def sensor_values() -> dict:
+    result = {}
+    for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
+        name = read_text(hwmon / "name", hwmon.name)
+        for pattern in ("temp*_input", "fan*_input", "power*_average"):
+            for sensor in hwmon.glob(pattern):
+                val = read_int(sensor)
+                if val is None:
+                    continue
+                stem = sensor.name.rsplit("_", 1)[0]
+                label = read_text(hwmon / f"{stem}_label") or stem
+                result[f"{name}.{label}"] = val
+    return result
+
+
+def nvme_sysfs() -> dict:
+    result = {}
+    keys = ("model", "firmware_rev", "serial", "state", "current_link_speed", "current_link_width", "critical_warning", "temperature", "temperature_sensor_1", "temperature_sensor_2", "warning_temp_time", "critical_comp_time", "unsafe_shutdowns", "media_errors", "num_err_log_entries", "data_units_read", "data_units_written", "host_reads", "host_writes", "power_cycles", "power_on_hours")
+    # Serial numbers are deliberately excluded; other health counters are useful and usually world-readable.
+    for dev in Path("/sys/class/nvme").glob("nvme*"):
+        item = {}
+        for key in keys:
+            if key == "serial":
+                continue
+            value = read_text(dev / key)
+            if value:
+                try:
+                    item[key] = int(value, 0)
+                except ValueError:
+                    item[key] = value
+        if item:
+            result[dev.name] = item
+    return result
+
+
+def cpu_power_state() -> dict:
+    result = {
+        "policies": {}, "intel_pstate": {},
+        "sched_ext": {
+            "state": read_text("/sys/kernel/sched_ext/state") or None,
+            "scheduler": read_text("/sys/kernel/sched_ext/root/ops") or None,
+        },
+    }
+    if shutil.which("powerprofilesctl"):
+        rc, profile, _ = command(["powerprofilesctl", "get"], 1)
+        result["power_profile"] = profile if rc == 0 else None
+    for policy in Path("/sys/devices/system/cpu/cpufreq").glob("policy*"):
+        fields = ("scaling_driver", "scaling_governor", "energy_performance_preference", "scaling_min_freq", "scaling_max_freq", "scaling_cur_freq", "cpuinfo_min_freq", "cpuinfo_max_freq", "cpuinfo_cur_freq")
+        result["policies"][policy.name] = {key: (read_int(policy / key) if key.endswith("freq") else read_text(policy / key) or None) for key in fields if (policy / key).exists()}
+    for key in ("status", "no_turbo", "hwp_dynamic_boost", "min_perf_pct", "max_perf_pct"):
+        value = read_text(Path("/sys/devices/system/cpu/intel_pstate") / key)
+        if value:
+            result["intel_pstate"][key] = value
+    for rapl in Path("/sys/class/powercap").glob("intel-rapl*"):
+        if not rapl.is_dir():
+            continue
+        name = read_text(rapl / "name", rapl.name)
+        energy = read_int(rapl / "energy_uj")
+        max_energy = read_int(rapl / "max_energy_range_uj")
+        if energy is not None:
+            result.setdefault("rapl_energy_uj", {})[name] = {"energy_uj": energy, "max_range_uj": max_energy}
+    return result
+
+
+def kernel_tunables() -> dict:
+    paths = {
+        "vm.swappiness": "/proc/sys/vm/swappiness",
+        "vm.page-cluster": "/proc/sys/vm/page-cluster",
+        "vm.dirty_background_bytes": "/proc/sys/vm/dirty_background_bytes",
+        "vm.dirty_bytes": "/proc/sys/vm/dirty_bytes",
+        "vm.dirty_ratio": "/proc/sys/vm/dirty_ratio",
+        "vm.dirty_background_ratio": "/proc/sys/vm/dirty_background_ratio",
+        "vm.vfs_cache_pressure": "/proc/sys/vm/vfs_cache_pressure",
+        "vm.watermark_scale_factor": "/proc/sys/vm/watermark_scale_factor",
+        "vm.compaction_proactiveness": "/proc/sys/vm/compaction_proactiveness",
+        "thp.enabled": "/sys/kernel/mm/transparent_hugepage/enabled",
+        "thp.defrag": "/sys/kernel/mm/transparent_hugepage/defrag",
+        "lru_gen.enabled": "/sys/kernel/mm/lru_gen/enabled",
+    }
+    return {key: value for key, path in paths.items() if (value := read_text(path))}
+
+
+def battery_state() -> dict:
+    result = {}
+    for path in Path("/sys/class/power_supply").glob("*"):
+        kind = read_text(path / "type")
+        if kind not in ("Battery", "Mains", "USB", "USB_C"):
+            continue
+        item = {key: read_text(path / key) for key in ("status", "capacity", "capacity_level", "online", "voltage_now", "current_now", "power_now", "energy_now", "energy_full", "charge_now", "charge_full")}
+        result[path.name] = {k: v for k, v in item.items() if v}
+    return result
+
+
+def wallpaper_state() -> dict:
+    paths = [HOME / ".config/hypr/current_wallpaper", HOME / ".config/variety/wallpaper/wallpaper.jpg"]
+    result = {}
+    for p in paths:
+        if not p.exists() and not p.is_symlink():
+            continue
+        try:
+            target = p.resolve(strict=True)
+            st = target.stat()
+            result[str(p.name)] = {"target_basename": target.name, "size_bytes": st.st_size, "mtime_ns": st.st_mtime_ns}
+        except OSError:
+            result[str(p.name)] = {"target_basename": None}
+    return result
+
+
+def hypr_env() -> dict:
+    """Environment for hyprctl with the *current* Hyprland instance.
+
+    The user service inherits HYPRLAND_INSTANCE_SIGNATURE once at start; after a
+    Hyprland restart that value is stale and every hyprctl call fails. Resolve
+    the newest live instance each time.
+    """
+    env = dict(os.environ)
+    best = None
+    for sock in (RUNTIME_DIR / "hypr").glob("*/.socket.sock"):
+        try:
+            mtime = sock.parent.stat().st_mtime
+        except OSError:
+            continue
+        if best is None or mtime > best[0]:
+            best = (mtime, sock.parent.name)
+    if best:
+        env["HYPRLAND_INSTANCE_SIGNATURE"] = best[1]
+    env.setdefault("XDG_RUNTIME_DIR", str(RUNTIME_DIR))
+    return env
+
+
+def hyprctl(args: list[str], timeout: float = 2.0) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(["hyprctl", *args], text=True, capture_output=True, timeout=timeout, check=False, env=hypr_env())
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, "", str(exc)
+
+
+def hyprctl_json(args: list[str], timeout: float = 2.0):
+    rc, out, err = hyprctl(["-j", *args], timeout)
+    if rc == 0:
+        try:
+            return json.loads(out), None
+        except json.JSONDecodeError as exc:
+            return None, f"invalid JSON: {exc}"
+    return None, err or out[:200] or f"exit status {rc}"
+
+
+def hyprland_layout() -> dict | None:
+    """Window/workspace counts (no titles) to test 'more windows -> more stutter'."""
+    clients, _ = hyprctl_json(["clients"])
+    workspaces, _ = hyprctl_json(["workspaces"])
+    if clients is None and workspaces is None:
+        return None
+    out = {}
+    if isinstance(clients, list):
+        out["clients"] = len(clients)
+        out["clients_hidden"] = sum(1 for c in clients if c.get("hidden"))
+        out["clients_floating"] = sum(1 for c in clients if c.get("floating"))
+        out["clients_xwayland"] = sum(1 for c in clients if c.get("xwayland"))
+    if isinstance(workspaces, list):
+        out["workspaces"] = len(workspaces)
+    return out
+
+
+def buddyinfo() -> dict:
+    """Free page blocks per order (0..10) for each zone; order 9 = 2 MiB, 10 = 4 MiB."""
+    result = {}
+    for line in read_text("/proc/buddyinfo").splitlines():
+        fields = line.split()
+        if len(fields) > 4 and fields[2] == "zone":
+            try:
+                counts = [int(x) for x in fields[4:]]
+            except ValueError:
+                continue
+            result[fields[3]] = counts
+    normal = result.get("Normal")
+    if normal:
+        # Free memory available as >=2 MiB contiguous blocks; low values = fragmented.
+        result["normal_free_mib_order_ge_9"] = round(sum(n * (4096 << o) for o, n in enumerate(normal) if o >= 9) / 1048576, 1)
+        result["normal_free_mib_total"] = round(sum(n * (4096 << o) for o, n in enumerate(normal)) / 1048576, 1)
+    return result
+
+
+def proc_swap_rss(pid: int) -> dict:
+    out = {}
+    for line in read_text(f"/proc/{pid}/status").splitlines():
+        key, _, rest = line.partition(":")
+        if key in ("VmRSS", "VmSwap"):
+            try:
+                out[key] = int(rest.split()[0]) * 1024
+            except (IndexError, ValueError):
+                pass
+    return out
+
+
+def desktop_procs(cur: dict, prev: dict | None, dt: float) -> list:
+    rows = []
+    for pid, proc in cur.items():
+        if proc["name"] not in DESKTOP_PROCS:
+            continue
+        old = (prev or {}).get(pid)
+        cpu = None
+        if old and old.get("start_ticks") == proc["start_ticks"]:
+            cpu = round(100 * max(0, proc["cpu_ticks"] - old["cpu_ticks"]) / HZ / max(dt, 0.001), 2)
+        mem = proc_swap_rss(int(pid))
+        rows.append({"pid": int(pid), "name": proc["name"], "cpu_pct_one_core": cpu,
+                     "rss_bytes": mem.get("VmRSS", proc["rss_bytes"]), "swap_bytes": mem.get("VmSwap")})
+    return rows
+
+
+def game_active() -> bool:
+    """True while the game-performance wrapper holds its shared lock."""
+    try:
+        with GAME_LOCK.open("r") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(f, fcntl.LOCK_UN)
+            return False
+    except OSError:
+        return False
+
+
+def hyprland_state() -> tuple[dict | None, str | None]:
+    if not shutil.which("hyprctl"):
+        return None, "hyprctl not installed"
+    value, err = hyprctl_json(["monitors"], 2)
+    if value is None:
+        return None, err
+    keep = ("name", "make", "model", "width", "height", "refreshRate", "scale", "transform", "focused", "dpmsStatus", "vrr", "disabled", "currentFormat")
+    return [{k: mon.get(k) for k in keep if k in mon} for mon in value if isinstance(mon, dict)], None
+
+
+def monitor_configuration(monitors: list | None) -> list | None:
+    if monitors is None:
+        return None
+    return [{key: value for key, value in mon.items() if key != "focused"} for mon in monitors]
+
+
+def gpu_state() -> tuple[dict | None, str | None]:
+    exe = shutil.which("gputop")
+    if not exe:
+        return None, "gputop not installed"
+    rc, out, err = command([exe, "-d", "0.2", "-n", "1"], 2.5)
+    if rc != 0:
+        return None, (err or out or f"gputop exited {rc}")[:300]
+    out = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", out)
+    devices = []
+    current = None
+    for line in out.splitlines():
+        head = re.search(r"DRM minor\s+(\d+).*?Frequency\(MHz\)(.*)", line)
+        if head:
+            current = {"drm_minor": int(head.group(1)), "frequency": {}, "clients": []}
+            for item in head.group(2).split():
+                m = re.fullmatch(r"(GT\d+)-([\d.]+)/([\d.]+)", item)
+                if m:
+                    current["frequency"][m.group(1)] = {"current_mhz": float(m.group(2)), "reported_max_mhz": float(m.group(3))}
+            devices.append(current)
+            continue
+        if current is None:
+            continue
+        row = re.match(r"^\s*(\d+)\s+\S+\s+\S+\s+\|\s*([\d.]+)%\s+\|\|\s*([\d.]+)%\s+\|\|\s*([\d.]+)%\s+\|\|\s*([\d.]+)%\s+\|\|\s*([\d.]+)%\s+\|\s*(.*?)\s*$", line)
+        if row:
+            client = {"pid": int(row.group(1)), "engines_pct": [float(row.group(i)) for i in range(2, 7)], "name": row.group(7).strip()[:80]}
+            if any(client["engines_pct"]):
+                current["clients"].append(client)
+    for dev in devices:
+        dev["clients"] = sorted(dev["clients"], key=lambda c: max(c["engines_pct"]), reverse=True)[:12]
+    if not devices:
+        return None, "gputop output did not contain device data"
+    return devices, None
+
+
+def service_state() -> dict:
+    result = {}
+    for scope in ("system", "user"):
+        args = ["systemctl"] + (["--user"] if scope == "user" else []) + ["list-units", "--type=service", "--state=running", "--no-legend", "--no-pager"]
+        rc, out, _ = command(args, 5)
+        result[scope] = sorted(line.split()[0] for line in out.splitlines() if line.split()) if rc == 0 else None
+    failed = {}
+    timers = {}
+    for scope in ("system", "user"):
+        args = ["systemctl"] + (["--user"] if scope == "user" else []) + ["--failed", "--no-legend", "--no-pager"]
+        rc, out, _ = command(args, 5)
+        failed[scope] = sorted(unit_names(out)) if rc == 0 else None
+        args = ["systemctl"] + (["--user"] if scope == "user" else []) + ["list-timers", "--all", "--no-legend", "--no-pager"]
+        rc, out, _ = command(args, 5)
+        timers[scope] = [line.strip() for line in out.splitlines() if line.strip()] if rc == 0 else None
+    return {"running": result, "failed": failed, "timers": timers}
+
+
+def btrfs_stats() -> dict:
+    rc, out, err = command(["btrfs", "device", "stats", "/"], 5)
+    stats = {}
+    if rc == 0:
+        for line in out.splitlines():
+            m = re.match(r"\[(.*?)\]\.(\w+)\s+(\d+)", line)
+            if m:
+                stats[m.group(2)] = int(m.group(3))
+    return {"device_stats": stats, "error": err[:200] if rc else None}
+
+
+def btrfs_usage() -> str | None:
+    rc, out, err = command(["btrfs", "filesystem", "usage", "-b", "/"], 8)
+    text = out + (("\n" if out else "") + err if err else "")
+    return text[:8000] if text else None
+
+
+def scrub_relevant(text: str) -> bool:
+    return bool(re.search(r"nvme|btrfs|\bxe\b|\bdrm\b|i915|gpu|oom|thermal|thrott|watchdog|sched_ext|intel_pstate|blk_update|I/O error|firmware|microcode|hung task", text, re.I))
+
+
+def kernel_events(since: float) -> tuple[list[str], str | None]:
+    if not shutil.which("journalctl"):
+        return [], "journalctl not installed"
+    rc, out, err = command(["journalctl", "-k", "--since", f"@{max(0, since - 1):.3f}", "--no-pager", "-o", "short-iso"], 5)
+    if rc != 0:
+        return [], (err or f"journalctl exited {rc}")[:300]
+    lines = []
+    for line in out.splitlines():
+        if scrub_relevant(line):
+            line = line.replace(str(HOME), "$HOME")
+            lines.append(line[:500])
+    return lines[-100:], None
+
+
+def variety_log_events(offset: int | None) -> tuple[int | None, list[str]]:
+    path = HOME / ".config/variety/variety.log"
+    try:
+        size = path.stat().st_size
+        if offset is None or size < offset:
+            return size, []
+        with path.open("r", errors="replace") as f:
+            f.seek(offset)
+            lines = f.read(256 * 1024).splitlines()
+        keep = []
+        for line in lines:
+            if re.search(r"wallpaper|change|error|warning|failed", line, re.I):
+                keep.append(line.replace(str(HOME), "$HOME")[:400])
+        return path.stat().st_size, keep[-30:]
+    except OSError:
+        return None, []
+
+
+def parse_key_values(path: str) -> dict:
+    result = {}
+    try:
+        for line in Path(path).read_text().splitlines():
+            fields = line.split()
+            # /proc/meminfo keys end in ':' (e.g. "MemTotal:").
+            key = fields[0].rstrip(":") if fields else ""
+            if key in ("MemTotal", "MemFree", "MemAvailable", "Buffers", "Cached", "SwapCached", "SwapTotal", "SwapFree", "Dirty", "Writeback", "Slab", "SReclaimable", "SUnreclaim", "AnonPages", "Mapped", "Shmem", "KReclaimable", "AnonHugePages", "PageTables") and len(fields) >= 2:
+                result[key] = int(fields[1]) * (1024 if len(fields) > 2 and fields[2] == "kB" else 1)
+    except (OSError, ValueError):
+        pass
+    return result
+
+
+def swap_state() -> list:
+    rows = []
+    try:
+        for line in Path("/proc/swaps").read_text().splitlines()[1:]:
+            fields = line.split()
+            if len(fields) >= 5:
+                rows.append({"name": fields[0], "type": fields[1], "size_kib": int(fields[2]), "used_kib": int(fields[3]), "priority": int(fields[4])})
+    except (OSError, ValueError):
+        pass
+    return rows
+
+
+def sample(prev_disks: dict | None, prev_stat: dict | None, prev_time: float | None, prev_proc: dict | None, prev_vm: dict | None, prev_power: dict | None, prev_wallpaper: dict | None, now: float, gpu: dict | None, monitor: dict | None, btrfs: dict | None, layout: dict | None = None, gaming: bool = False) -> tuple[dict, dict, dict, dict, dict, dict, dict]:
+    dt = max(0.001, now - prev_time) if prev_time else SAMPLE_SECONDS
+    stat = parse_proc_stat()
+    procs = process_snapshot()
+    vms = vmstat()
+    power = cpu_power_state()
+    wallpaper = wallpaper_state()
+    current_disks = diskstats()
+    cpu_frequency_khz = {
+        name: values.get("scaling_cur_freq")
+        for name, values in power.get("policies", {}).items()
+        if values.get("scaling_cur_freq") is not None
+    }
+    recorded_power = {
+        "power_profile": power.get("power_profile"),
+        "policies": {
+            name: {key: values.get(key) for key in ("scaling_driver", "scaling_governor", "energy_performance_preference", "scaling_min_freq", "scaling_max_freq") if key in values}
+            for name, values in power.get("policies", {}).items()
+        },
+        "intel_pstate": power.get("intel_pstate", {}),
+        "sched_ext": power.get("sched_ext", {}),
+    }
+    load = read_text("/proc/loadavg").split()
+    try:
+        uptime = float(read_text("/proc/uptime").split()[0])
+    except (ValueError, IndexError):
+        uptime = None
+    filesystems = {path: statvfs(path) for path in ("/", "/home", "/var/cache", "/var/log", "/var/tmp")}
+    sample_data = {
+        "type": "sample",
+        "timestamp": now_iso(),
+        "unix_time": now,
+        "monotonic_seconds": time.monotonic(),
+        "boot_id": read_text("/proc/sys/kernel/random/boot_id"),
+        "uptime_seconds": uptime,
+        "sample_interval_seconds": round(dt, 3),
+        "loadavg": load[:3],
+        "cpu_pct": cpu_percentages(stat, prev_stat),
+        "cpu_counters": stat["misc"],
+        "memory_bytes": parse_key_values("/proc/meminfo"),
+        "swap": swap_state(),
+        "vmstat_counters": vms,
+        "pressure": psi(),
+        "process_top": process_top(procs, prev_proc, dt),
+        "process_top_rss": process_top_rss(procs),
+        "disk_rates": disk_rates(current_disks, prev_disks, dt),
+        "filesystems": filesystems,
+        "zram": zram_stats(),
+        "sensors_raw": sensor_values(),
+        "nvme_sysfs": nvme_sysfs(),
+        "cpu_frequency_khz": cpu_frequency_khz,
+        "power_state": recorded_power,
+        "kernel_tunables": kernel_tunables(),
+        "battery": battery_state(),
+        "wallpaper": wallpaper,
+        "gpu": gpu,
+        "hyprland_monitors": monitor,
+        "btrfs_device_stats": btrfs,
+        "buddyinfo": buddyinfo(),
+        "desktop_procs": desktop_procs(procs, prev_proc, dt),
+        "hyprland_layout": layout,
+        "game_active": gaming,
+    }
+    if prev_vm:
+        sample_data["vmstat_delta"] = {key: max(0, val - prev_vm.get(key, val)) for key, val in vms.items()}
+    if prev_power:
+        old_rapl = prev_power.get("rapl_energy_uj", {})
+        rapl_watts = {}
+        for name, val in power.get("rapl_energy_uj", {}).items():
+            old = old_rapl.get(name, {}).get("energy_uj")
+            if old is not None and val["energy_uj"] >= old:
+                rapl_watts[name] = round((val["energy_uj"] - old) / 1e6 / dt, 2)
+            elif old is not None and val.get("max_range_uj"):
+                diff = val["energy_uj"] + val["max_range_uj"] - old
+                rapl_watts[name] = round(diff / 1e6 / dt, 2)
+        sample_data["rapl_watts"] = rapl_watts
+    if prev_wallpaper is not None and wallpaper != prev_wallpaper:
+        sample_data["wallpaper_changed"] = True
+    return sample_data, {"diskstats": current_disks}, stat, procs, vms, power, wallpaper
+
+
+# ---------------------------------------------------------------------------
+# Live stutter detector: asks on the desktop, reviews after games.
+# ---------------------------------------------------------------------------
+
+def find_pid(name: str) -> int | None:
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit() and read_text(entry / "comm") == name:
+            return int(entry.name)
+    return None
+
+
+def cgroup_dir(pid: int | None) -> Path | None:
+    if not pid:
+        return None
+    rel = read_text(f"/proc/{pid}/cgroup").rpartition("::")[2]
+    path = Path("/sys/fs/cgroup") / rel.lstrip("/")
+    return path if rel and path.is_dir() else None
+
+
+def local_hms(ts: float) -> str:
+    return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+
+
+def prompts_enabled() -> bool:
+    return not PROMPTS_OFF.exists()
+
+
+def ask(summary: str, body: str, actions: list[tuple[str, str]], timeout_s: int) -> str | None:
+    """Notification with buttons; returns the chosen action name, or None if ignored."""
+    if not shutil.which("notify-send"):
+        return None
+    args = ["notify-send", "-a", "stutter-watch", "-u", "normal", "-t", str(timeout_s * 1000)]
+    for name, label in actions:
+        args += ["-A", f"{name}={label}"]
+    args += [summary, body]
+    try:
+        proc = subprocess.run(args, text=True, capture_output=True, timeout=timeout_s + 10, check=False)
+        return proc.stdout.strip() or None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+YES_NO = [("yes", "Yes, stuttered"), ("no", "No"), ("unsure", "Not sure")]
+
+
+class PsiTrigger:
+    def __init__(self, label: str, path: Path, threshold_us: int):
+        self.label, self.path = label, path
+        self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        try:
+            os.write(self.fd, f"some {threshold_us} {PSI_WINDOW_US}\0".encode())
+        except OSError:
+            os.close(self.fd)
+            raise
+
+    def close(self) -> None:
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
+class Detector:
+    """Runs beside the 5 s sampler.
+
+    * PSI triggers (kernel-notified within ~2 s) on the desktop stack's cgroup,
+      Steam's cgroup and system memory. On the desktop a stall episode pops up a
+      Yes/No question right away (rate-limited); during a game it is queued.
+    * While a game runs, MangoHud's per-frame log is tailed; clusters of slow
+      frames become stutter detections.
+    * When the game exits, the worst detections are reviewed one notification at a time.
+    """
+
+    def __init__(self, events_path: Path):
+        self.events_path = events_path
+        self.lock = threading.Lock()
+        self.triggers: dict[str, PsiTrigger] = {}
+        self.arm_errors: set[str] = set()
+        self.stall: dict | None = None
+        self.session: dict | None = None
+        self.last_desktop_prompt = 0.0
+        self.desktop_prompt_busy = False
+        self.seq = 0
+
+    def log(self, obj: dict) -> None:
+        append_json(self.events_path, obj)
+
+    def next_id(self, prefix: str) -> str:
+        with self.lock:
+            self.seq += 1
+            return f"{prefix}-{int(time.time())}-{self.seq}"
+
+    def start(self) -> None:
+        FRAMETIMES.mkdir(parents=True, exist_ok=True)
+        cutoff = time.time() - FRAMETIME_KEEP_DAYS * 86400
+        for f in (f for d in FRAME_DIRS for f in d.glob("*.csv")):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+        for target in (self.psi_loop, self.frame_loop):
+            threading.Thread(target=self.guard, args=(target,), daemon=True).start()
+
+    def guard(self, target) -> None:
+        # A detector bug must never take the sampler down; log it and stop that thread.
+        try:
+            target()
+        except Exception as exc:  # noqa: BLE001
+            self.log({"type": "detector_error", "timestamp": now_iso(), "thread": target.__name__, "error": repr(exc)[:500]})
+
+    # ----- PSI -----
+    def desired_triggers(self) -> dict[str, tuple[Path, int]]:
+        want = {"global_memory": (Path("/proc/pressure/memory"), PSI_GLOBAL_MEM_US)}
+        desk = cgroup_dir(find_pid("Hyprland"))
+        if desk:
+            want["desktop_cpu"] = (desk / "cpu.pressure", PSI_DESKTOP_US)
+            want["desktop_memory"] = (desk / "memory.pressure", PSI_DESKTOP_US)
+        game = cgroup_dir(find_pid("steam"))
+        if game:
+            want["game_cpu"] = (game / "cpu.pressure", PSI_GAME_CPU_US)
+            want["game_memory"] = (game / "memory.pressure", PSI_GAME_MEM_US)
+        return want
+
+    def rearm(self) -> None:
+        want = self.desired_triggers()
+        for label in list(self.triggers):
+            if label not in want or self.triggers[label].path != want[label][0]:
+                self.triggers.pop(label).close()
+        for label, (path, threshold) in want.items():
+            if label in self.triggers:
+                continue
+            try:
+                self.triggers[label] = PsiTrigger(label, path, threshold)
+                self.arm_errors.discard(label)
+            except OSError as exc:
+                if label not in self.arm_errors:
+                    self.arm_errors.add(label)
+                    self.log({"type": "sensor_unavailable", "sensor": f"psi_trigger:{label}", "timestamp": now_iso(), "detail": str(exc)[:200]})
+
+    def psi_loop(self) -> None:
+        next_resolve = 0.0
+        while not STOP:
+            now = time.time()
+            if now >= next_resolve:
+                self.rearm()
+                next_resolve = now + 15
+            poller = select.poll()
+            by_fd = {}
+            for trig in self.triggers.values():
+                poller.register(trig.fd, select.POLLPRI)
+                by_fd[trig.fd] = trig
+            for fd, ev in poller.poll(1000):
+                trig = by_fd.get(fd)
+                if trig is None:
+                    continue
+                if ev & (select.POLLERR | select.POLLNVAL):
+                    self.triggers.pop(trig.label, None)
+                    trig.close()  # cgroup went away (e.g. Steam restarted); re-armed on next resolve
+                elif ev & select.POLLPRI:
+                    self.on_stall(trig.label, time.time())
+            self.flush_stall(time.time())
+            self.check_game_transition()
+
+    def on_stall(self, label: str, ts: float) -> None:
+        with self.lock:
+            if self.stall and ts - self.stall["last"] <= 4:
+                self.stall["last"] = ts
+                self.stall["sources"][label] = self.stall["sources"].get(label, 0) + 1
+                return
+        self.flush_stall(ts, force=True)
+        with self.lock:
+            self.stall = {"start": ts, "last": ts, "sources": {label: 1}, "gaming": game_active()}
+
+    def flush_stall(self, now: float, force: bool = False) -> None:
+        with self.lock:
+            stall = self.stall
+            if not stall or (not force and now - stall["last"] <= 4):
+                return
+            self.stall = None
+        ep = {
+            "type": "stall_episode", "id": self.next_id("stall"),
+            "timestamp": datetime.fromtimestamp(stall["start"], timezone.utc).isoformat(timespec="milliseconds"),
+            "start_unix": stall["start"], "duration_s": round(stall["last"] - stall["start"] + PSI_WINDOW_US / 1e6, 1),
+            "sources": stall["sources"], "gaming": stall["gaming"],
+            "fragmentation_mib_order_ge_9": buddyinfo().get("normal_free_mib_order_ge_9"),
+            "pressure": psi(),
+        }
+        self.log(ep)
+        if stall["gaming"]:
+            with self.lock:
+                if self.session is not None:
+                    self.session["stalls"].append(ep)
+            return
+        desktop = any(s.startswith("desktop") or s == "global_memory" for s in stall["sources"])
+        if desktop and prompts_enabled() and not self.desktop_prompt_busy and now - self.last_desktop_prompt >= DESKTOP_PROMPT_COOLDOWN_S:
+            self.last_desktop_prompt = now
+            self.desktop_prompt_busy = True
+            threading.Thread(target=self.desktop_prompt, args=(ep,), daemon=True).start()
+
+    def desktop_prompt(self, ep: dict) -> None:
+        try:
+            kinds = sorted({"memory" if "memory" in s else "CPU" for s in ep["sources"]})
+            answer = ask(
+                "Possible stutter just now?",
+                f"At {local_hms(ep['start_unix'])} the desktop was held up waiting for {' and '.join(kinds)} "
+                f"(~{ep['duration_s']} s). Did you notice a stutter?",
+                YES_NO, 45)
+            self.log({"type": "stutter_confirmation", "timestamp": now_iso(), "ref": ep["id"], "context": "desktop", "answer": answer or "no_response"})
+        finally:
+            self.desktop_prompt_busy = False
+
+    # ----- game sessions -----
+    def check_game_transition(self) -> None:
+        gaming = game_active()
+        with self.lock:
+            session = self.session
+            if gaming and session is None:
+                self.session = {"id": self.next_id_unlocked("game"), "start": time.time(), "detections": [], "stalls": [], "logs": set()}
+                return
+            if gaming or session is None:
+                return
+            self.session = None
+        session["end"] = time.time()
+        threading.Thread(target=self.guard, args=(lambda: self.end_session(session),), daemon=True).start()
+
+    def next_id_unlocked(self, prefix: str) -> str:
+        self.seq += 1
+        return f"{prefix}-{int(time.time())}-{self.seq}"
+
+    def end_session(self, session: dict) -> None:
+        time.sleep(8)  # let the frame thread close the last episode
+        with self.lock:
+            dets = list(session["detections"])
+        stalls = session["stalls"]
+        # Without a MangoHud log (e.g. MangoHud opted out), fall back to the game's own stalls.
+        if not session["logs"]:
+            dets = [{"id": s["id"], "start_unix": s["start_unix"], "duration_s": s["duration_s"], "source": "psi", "sources": s["sources"]}
+                    for s in stalls if any(k.startswith("game") for k in s["sources"])]
+        minutes = round((session["end"] - session["start"]) / 60)
+        summary = {"type": "game_session_summary", "timestamp": now_iso(), "id": session["id"], "minutes": minutes,
+                   "frame_logs": sorted(session["logs"]), "detections": len(dets), "stall_episodes": len(stalls)}
+        self.log(summary)
+        if minutes < 2:
+            return
+        if not dets:
+            if prompts_enabled():
+                notify("No stutters detected", f"Game session ({minutes} min). Press Super+Shift+M if you noticed one.")
+            return
+        save_pending({"session": session["id"], "minutes": minutes, "items": dets})
+        if prompts_enabled():
+            review_items(dets, minutes, self.log)
+
+
+def severity(d: dict) -> float:
+    if d.get("source") == "frametime":
+        return d.get("worst_ms", 0) * max(1, d.get("hitches", 1))
+    return 100 * d.get("duration_s", 0)
+
+
+def describe(d: dict) -> str:
+    if d.get("source") == "frametime":
+        txt = f"{d['duration_s']} s · {d['hitches']} slow frames · worst {d['worst_ms']:.0f} ms (normal {d['median_ms']:.1f} ms)"
+        if d.get("long_freeze"):
+            txt += "\nIncludes a multi-second freeze (could be a loading screen)."
+        return txt
+    kinds = sorted({"memory" if "memory" in s else "CPU" for s in d.get("sources", {})})
+    return f"~{d['duration_s']} s · game held up waiting for {' and '.join(kinds)}"
+
+
+def save_pending(obj: dict) -> None:
+    STATE.mkdir(parents=True, exist_ok=True)
+    PENDING_REVIEW.write_text(json.dumps(obj))
+
+
+def review_items(dets: list, minutes: int, log, intro_timeout: int = 600) -> None:
+    worst = max(dets, key=severity)
+    choice = ask(
+        f"Game session: {len(dets)} suspected stutter{'s' if len(dets) != 1 else ''}",
+        f"{minutes} min played. Worst at {local_hms(worst['start_unix'])}: {describe(worst).splitlines()[0]}.\nReview them now?",
+        [("review", "Review"), ("later", "Later"), ("skip", "Skip")], intro_timeout)
+    log({"type": "review_started", "timestamp": now_iso(), "choice": choice or "no_response", "items": len(dets)})
+    if choice != "review":
+        if choice == "skip":
+            PENDING_REVIEW.unlink(missing_ok=True)
+        else:
+            notify("Review saved for later", "Run 'stutter-watch review' when convenient.")
+        return
+    top = sorted(sorted(dets, key=severity, reverse=True)[:REVIEW_MAX_ITEMS], key=lambda d: d["start_unix"])
+    for i, d in enumerate(top, 1):
+        answer = ask(f"Stutter {i}/{len(top)} at {local_hms(d['start_unix'])}", describe(d) + "\nDid you notice it?", YES_NO, 300)
+        log({"type": "stutter_confirmation", "timestamp": now_iso(), "ref": d["id"], "context": "game_review", "answer": answer or "no_response"})
+        if answer is None:
+            break  # user walked away; keep the rest pending
+    else:
+        missed = ask("Anything we missed?", "Did you notice stutters that weren't listed?",
+                     [("yes", "Yes, there were more"), ("no", "No")], 300)
+        log({"type": "review_missed_question", "timestamp": now_iso(), "answer": missed or "no_response"})
+        PENDING_REVIEW.unlink(missing_ok=True)
+        notify("Thanks — review saved", "")
+
+
+class FrameEpisodes:
+    """Turns a stream of frame times into stutter episodes."""
+
+    def __init__(self):
+        self.recent: list[float] = []
+        self.median: float | None = None
+        self.since_median = 0
+        self.ep: dict | None = None
+
+    def feed(self, t: float, ft: float) -> dict | None:
+        """t = wall time of the frame; returns a finished episode (if one closed)."""
+        done = None
+        if self.ep and t - self.ep["last"] > EPISODE_GAP_S:
+            done = self.close()
+        med = self.median
+        if med is not None and ft >= HITCH_MIN_MS and ft >= HITCH_FACTOR * med:
+            if self.ep is None:
+                self.ep = {"start": t - ft / 1000, "last": t, "hitches": 0, "worst": 0.0, "median": med, "long_freeze": False}
+            self.ep["last"] = t
+            self.ep["hitches"] += 1
+            self.ep["worst"] = max(self.ep["worst"], ft)
+            if ft >= 2000:
+                self.ep["long_freeze"] = True
+            return done
+        # Normal frame: update the baseline (hitches are kept out of it).
+        self.recent.append(ft)
+        if len(self.recent) > 600:
+            del self.recent[:-600]
+        self.since_median += 1
+        if len(self.recent) >= 60 and (med is None or self.since_median >= 30):
+            s = sorted(self.recent)
+            self.median = s[len(s) // 2]
+            self.since_median = 0
+        return done
+
+    def close(self) -> dict | None:
+        ep, self.ep = self.ep, None
+        if not ep or (ep["hitches"] < EPISODE_MIN_HITCHES and ep["worst"] < EPISODE_BIG_HITCH_MS):
+            return None
+        return ep
+
+
+def mangohud_log_start(path: Path) -> float | None:
+    m = re.search(r"_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.csv$", path.name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d_%H-%M-%S").timestamp()
+    except ValueError:
+        return None
+
+
+def _detector_frame_loop(self: Detector) -> None:
+    current: Path | None = None
+    fh = None
+    partial = ""
+    episodes = FrameEpisodes()
+    log_start = None
+    last_growth = time.time()
+    exe = ""
+
+    def finish(ep: dict | None) -> None:
+        if not ep:
+            return
+        det = {"type": "stutter_detected", "id": self.next_id("frames"), "source": "frametime",
+               "timestamp": datetime.fromtimestamp(ep["start"], timezone.utc).isoformat(timespec="milliseconds"),
+               "start_unix": ep["start"], "duration_s": round(ep["last"] - ep["start"], 1),
+               "hitches": ep["hitches"], "worst_ms": round(ep["worst"], 1), "median_ms": round(ep["median"], 2),
+               "long_freeze": ep["long_freeze"], "exe": exe,
+               "fragmentation_mib_order_ge_9": buddyinfo().get("normal_free_mib_order_ge_9")}
+        self.log(det)
+        with self.lock:
+            if self.session is not None:
+                self.session["detections"].append(det)
+
+    while not STOP:
+        now = time.time()
+        newest = None
+        try:
+            logs = [p for d in FRAME_DIRS for p in d.glob("*.csv") if now - p.stat().st_mtime < 15]
+            newest = max(logs, key=lambda p: p.stat().st_mtime) if logs else None
+            # Stick with the log being followed while it is still live: an app with two
+            # Vulkan processes writes two logs at once and would otherwise flip-flop.
+            if current is not None and current in logs:
+                newest = current
+        except OSError:
+            pass
+        if newest is not None and newest != current:
+            if fh:
+                fh.close()
+            finish(episodes.close())
+            current, fh, partial, episodes = newest, newest.open("r", errors="replace"), "", FrameEpisodes()
+            log_start = mangohud_log_start(newest) or now
+            exe = newest.name.rsplit("_", 2)[0][:60]
+            last_growth = now
+            with self.lock:
+                if self.session is not None:
+                    self.session["logs"].add(newest.name)
+        if fh:
+            chunk = fh.read()
+            if chunk:
+                last_growth = now
+                lines = (partial + chunk).split("\n")
+                partial = lines.pop()
+                for line in lines:
+                    cols = line.split(",")
+                    if len(cols) < 3:
+                        continue
+                    try:
+                        ft = float(cols[1])
+                        elapsed = float(cols[-1]) / 1e9
+                    except ValueError:
+                        continue  # header lines
+                    if elapsed < LOG_WARMUP_S:
+                        continue
+                    finish(episodes.feed(log_start + elapsed, ft))
+            elif now - last_growth > 5:
+                finish(episodes.close())  # game ended or paused logging
+                if now - last_growth > 15:
+                    fh.close()
+                    fh, current = None, None
+        time.sleep(0.5)
+
+
+Detector.frame_loop = _detector_frame_loop
+
+
+def review_command() -> int:
+    try:
+        pending = json.loads(PENDING_REVIEW.read_text())
+    except (OSError, json.JSONDecodeError):
+        print("Nothing waiting for review.")
+        return 0
+    path = session_dir()
+    log = (lambda obj: append_json(path / "events.jsonl", obj)) if path else (lambda obj: None)
+    review_items(pending.get("items", []), pending.get("minutes", 0), log, intro_timeout=120)
+    return 0
+
+
+def prompts_command(state: str) -> int:
+    STATE.mkdir(parents=True, exist_ok=True)
+    if state == "off":
+        PROMPTS_OFF.touch()
+    elif state == "on":
+        PROMPTS_OFF.unlink(missing_ok=True)
+    print(f"Prompts are {'on' if prompts_enabled() else 'off'} (detections are logged either way).")
+    return 0
+
+
+def signal_handler(_signum, _frame):
+    global STOP
+    STOP = True
+
+
+def run_recorder() -> int:
+    STATE.mkdir(parents=True, exist_ok=True)
+    with LOCK.open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("stutter-watch is already running", file=sys.stderr)
+            return 1
+        path = session_dir()
+        if path is None:
+            path = start_session()
+        manifest = load_manifest(path)
+        if manifest.get("status") == "complete":
+            return 0
+        if not manifest:
+            print(f"Invalid session manifest at {path}", file=sys.stderr)
+            return 1
+        if time.time() >= manifest.get("deadline_unix", 0):
+            manifest.update({"status": "complete", "finished_at": now_iso(), "finish_reason": "seven-day deadline reached"})
+            save_manifest(path, manifest)
+            append_json(path / "events.jsonl", {"type": "session_completed", "timestamp": now_iso(), "reason": "seven-day deadline reached"})
+            return 0
+
+        events_path = path / "events.jsonl"
+        samples_path = path / "samples.jsonl"
+        if not (path / "inventory.json").exists():
+            inv = inventory()
+            tmp = path / "inventory.json.tmp"
+            tmp.write_text(json.dumps(inv, indent=2, ensure_ascii=False) + "\n")
+            tmp.replace(path / "inventory.json")
+            append_json(events_path, {"type": "inventory_captured", "timestamp": now_iso()})
+        else:
+            inv = json.loads((path / "inventory.json").read_text())
+
+        boot_id = read_text("/proc/sys/kernel/random/boot_id")
+        append_json(events_path, {"type": "recorder_started", "timestamp": now_iso(), "boot_id": boot_id, "resumed": bool(manifest.get("last_recorder_start"))})
+        manifest["last_recorder_start"] = now_iso()
+        manifest["status"] = "recording"
+        save_manifest(path, manifest)
+        print(f"Recording to {path} (5-second samples; seven-day session)", flush=True)
+
+        previous_stat = None
+        previous_proc = None
+        previous_vm = None
+        previous_power = None
+        previous_wallpaper = None
+        previous_disks = None
+        previous_gpu = None
+        previous_monitors = None
+        previous_services = None
+        previous_btrfs = None
+        previous_layout = None
+        previous_gaming = None
+        journal_time = time.time() - 2
+        variety_offset = None
+        last_gpu = last_monitor = last_btrfs = last_usage = last_service = last_journal = 0.0
+        last_fsync = time.monotonic()
+        previous_sample_time = None
+        last_boot = boot_id
+        sample_file = samples_path.open("a", encoding="utf-8", buffering=1024 * 1024)
+
+        # If resuming the same session, avoid fabricated rate deltas on first sample.
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+        Detector(events_path).start()
+        while not STOP:
+            tick_start = time.monotonic()
+            now = time.time()
+            if now >= manifest["deadline_unix"]:
+                manifest.update({"status": "complete", "finished_at": now_iso(), "finish_reason": "seven-day deadline reached"})
+                save_manifest(path, manifest)
+                append_json(events_path, {"type": "session_completed", "timestamp": now_iso(), "reason": "seven-day deadline reached"})
+                break
+            current_boot = read_text("/proc/sys/kernel/random/boot_id")
+            if current_boot != last_boot:
+                append_json(events_path, {"type": "boot_changed", "timestamp": now_iso(), "old_boot_id": last_boot, "new_boot_id": current_boot})
+                last_boot = current_boot
+                previous_stat = previous_proc = previous_vm = previous_power = previous_disks = None
+                previous_sample_time = None
+
+            if now - last_gpu >= 15:
+                new_gpu, gpu_error = gpu_state()
+                if new_gpu is not None:
+                    previous_gpu = new_gpu
+                    if manifest.pop("gpu_error_recorded", False):
+                        append_json(events_path, {"type": "sensor_recovered", "sensor": "gputop", "timestamp": now_iso()})
+                        save_manifest(path, manifest)
+                elif gpu_error and not manifest.get("gpu_error_recorded"):
+                    append_json(events_path, {"type": "sensor_unavailable", "sensor": "gputop", "timestamp": now_iso(), "detail": gpu_error})
+                    manifest["gpu_error_recorded"] = True
+                    save_manifest(path, manifest)
+                last_gpu = now
+            if now - last_monitor >= 15:
+                new_monitors, monitor_error = hyprland_state()
+                if new_monitors is not None:
+                    if previous_monitors is not None and monitor_configuration(new_monitors) != monitor_configuration(previous_monitors):
+                        append_json(events_path, {"type": "monitor_configuration_change", "timestamp": now_iso(), "before": previous_monitors, "after": new_monitors})
+                    previous_monitors = new_monitors
+                    previous_layout = hyprland_layout()
+                    if manifest.pop("hyprctl_error_recorded", False):
+                        append_json(events_path, {"type": "sensor_recovered", "sensor": "hyprctl", "timestamp": now_iso()})
+                        save_manifest(path, manifest)
+                elif monitor_error and not manifest.get("hyprctl_error_recorded"):
+                    append_json(events_path, {"type": "sensor_unavailable", "sensor": "hyprctl", "timestamp": now_iso(), "detail": monitor_error})
+                    manifest["hyprctl_error_recorded"] = True
+                    save_manifest(path, manifest)
+                last_monitor = now
+                # Safety net: if a probe process died before restoring blur, restore it here.
+                restore_stale_probe(events_path)
+            gaming = game_active()
+            if previous_gaming is not None and gaming != previous_gaming:
+                append_json(events_path, {"type": "game_started" if gaming else "game_ended", "timestamp": now_iso()})
+            previous_gaming = gaming
+            if now - last_btrfs >= 60:
+                previous_btrfs = btrfs_stats()
+                last_btrfs = now
+            current_services = previous_services
+            if now - last_service >= 300:
+                current_services = service_state()
+                if previous_services is not None and current_services != previous_services:
+                    append_json(events_path, {"type": "service_state_change", "timestamp": now_iso(), "before": previous_services, "after": current_services})
+                elif previous_services is None:
+                    append_json(events_path, {"type": "service_state_snapshot", "timestamp": now_iso(), "state": current_services})
+                previous_services = current_services
+                last_service = now
+
+            row, disk_ref, current_stat, current_proc, current_vm, current_power, current_wallpaper = sample(
+                previous_disks,
+                previous_stat,
+                previous_sample_time,
+                previous_proc,
+                previous_vm,
+                previous_power,
+                previous_wallpaper,
+                now,
+                previous_gpu,
+                previous_monitors,
+                previous_btrfs,
+                previous_layout,
+                gaming,
+            )
+            if previous_stat is None:
+                row["cpu_pct"] = {}
+            if previous_disks is None:
+                row["disk_rates"] = {}
+            if previous_power is None:
+                row.pop("rapl_watts", None)
+            sample_file.write(json.dumps(row, separators=(",", ":"), ensure_ascii=False) + "\n")
+            if row.get("wallpaper_changed"):
+                append_json(events_path, {"type": "wallpaper_changed", "timestamp": row["timestamp"], "wallpaper": current_wallpaper})
+            if previous_power is not None and current_power != previous_power:
+                # Ignore telemetry-only frequency/energy readings; keep actual
+                # governor, policy, power-profile, and scheduler changes.
+                def control_state(value):
+                    v = dict(value)
+                    v.pop("rapl_energy_uj", None)
+                    for policy in v.get("policies", {}).values():
+                        policy.pop("scaling_cur_freq", None)
+                        policy.pop("cpuinfo_cur_freq", None)
+                    return v
+                if control_state(current_power) != control_state(previous_power):
+                    append_json(events_path, {"type": "power_scheduler_state_change", "timestamp": row["timestamp"], "before": control_state(previous_power), "after": control_state(current_power)})
+            if now - last_usage >= 600:
+                usage = btrfs_usage()
+                if usage:
+                    append_json(events_path, {"type": "btrfs_usage_snapshot", "timestamp": now_iso(), "output": usage})
+                last_usage = now
+            if now - last_journal >= 30:
+                lines, error = kernel_events(journal_time)
+                journal_time = now
+                if lines:
+                    append_json(events_path, {"type": "kernel_log_events", "timestamp": now_iso(), "lines": lines})
+                if error and not manifest.get("journal_error_recorded"):
+                    append_json(events_path, {"type": "sensor_unavailable", "sensor": "kernel_journal", "timestamp": now_iso(), "detail": error})
+                    manifest["journal_error_recorded"] = True
+                    save_manifest(path, manifest)
+                last_journal = now
+            variety_offset, variety_lines = variety_log_events(variety_offset)
+            if variety_lines:
+                append_json(events_path, {"type": "variety_log_events", "timestamp": now_iso(), "lines": variety_lines})
+
+            previous_stat = current_stat
+            previous_proc = current_proc
+            previous_vm = current_vm
+            previous_power = current_power
+            previous_wallpaper = current_wallpaper
+            previous_stat = current_stat
+            previous_disks = disk_ref["diskstats"]
+            previous_sample_time = now
+
+            if samples_path.stat().st_size >= MAX_LOG_BYTES:
+                manifest.update({"status": "stopped", "finished_at": now_iso(), "finish_reason": "2 GiB sample log safety limit reached"})
+                save_manifest(path, manifest)
+                append_json(events_path, {"type": "recorder_stopped", "timestamp": now_iso(), "reason": manifest["finish_reason"]})
+                break
+            if time.monotonic() - last_fsync >= 60:
+                try:
+                    sample_file.flush()
+                    os.fsync(sample_file.fileno())
+                except OSError:
+                    pass
+                last_fsync = time.monotonic()
+            remaining = SAMPLE_SECONDS - (time.monotonic() - tick_start)
+            if remaining > 0:
+                time.sleep(remaining)
+
+        if STOP and manifest.get("status") == "recording":
+            manifest.update({"status": "paused", "paused_at": now_iso(), "pause_reason": "service stopped or user requested stop"})
+            save_manifest(path, manifest)
+            append_json(events_path, {"type": "recorder_paused", "timestamp": now_iso()})
+        sample_file.flush()
+        sample_file.close()
+        return 0
+
+
+def status() -> int:
+    path = session_dir()
+    if not path:
+        print("No active stutter-watch session. Start the user service to create one.")
+        return 1
+    manifest = load_manifest(path)
+    print(json.dumps({"session_dir": str(path), "manifest": manifest}, indent=2))
+    return 0
+
+
+def notify(summary: str, body: str = "", urgency: str = "low") -> None:
+    if shutil.which("notify-send"):
+        command(["notify-send", "-a", "stutter-watch", "-u", urgency, "-t", "4000", summary, body], 3)
+
+
+def diagnostics() -> dict:
+    """Everything the manual checklist asked for, captured at the moment of a mark."""
+    before = process_snapshot()
+    t0 = time.monotonic()
+    time.sleep(1.0)
+    after = process_snapshot()
+    dt = time.monotonic() - t0
+    active, _ = hyprctl_json(["activewindow"])
+    blur, _ = hyprctl_json(["getoption", "decoration:blur:enabled"])
+    probe_state = None
+    try:
+        probe_state = json.loads(PROBE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {
+        "buddyinfo": buddyinfo(),
+        "memory_bytes": parse_key_values("/proc/meminfo"),
+        "vmstat_counters": vmstat(),
+        "pressure": psi(),
+        "swap": swap_state(),
+        "desktop_procs": desktop_procs(after, before, dt),
+        "process_top_1s": process_top(after, before, dt, limit=8),
+        "hyprland_layout": hyprland_layout(),
+        # Class/workspace only; window titles are not recorded.
+        "active_window": {k: (active or {}).get(k) for k in ("class", "fullscreen", "floating", "xwayland")} | {"workspace": ((active or {}).get("workspace") or {}).get("name")} if isinstance(active, dict) else None,
+        "blur_enabled": bool(blur.get("bool", blur.get("int"))) if isinstance(blur, dict) else None,
+        "probe_active": probe_state,
+        "game_active": game_active(),
+        "uptime_seconds": float((read_text("/proc/uptime").split() or ["0"])[0]),
+    }
+
+
+def mark(text: str) -> int:
+    path = session_dir()
+    if not path:
+        print("No active session; start stutter-watch first.", file=sys.stderr)
+        notify("stutter-watch: no active session", "Mark not recorded.", "normal")
+        return 1
+    manifest = load_manifest(path)
+    if manifest.get("status") == "complete":
+        print("The current seven-day session is complete.", file=sys.stderr)
+        notify("stutter-watch: session complete", "Run 'stutter-watch new-session' to record again.", "normal")
+        return 1
+    text = " ".join(text.split())[:300]
+    stamp, unix = now_iso(), time.time()  # timestamp of the keypress, before the 1 s measurement
+    diag = diagnostics()
+    append_json(path / "events.jsonl", {"type": "user_mark", "timestamp": stamp, "unix_time": unix, "text": text or "stutter noticed", "diagnostics": diag})
+    frag = (diag.get("buddyinfo") or {}).get("normal_free_mib_order_ge_9")
+    notify("Stutter marked", f"Saved diagnostics. ≥2 MiB free blocks: {frag} MiB" + ("  (blur probe active)" if diag.get("probe_active") else ""))
+    print(f"Recorded mark with diagnostics in {path / 'events.jsonl'}")
+    return 0
+
+
+def set_blur(enabled: bool) -> bool:
+    rc, out, _ = hyprctl(["eval", f"hl.config({{ decoration = {{ blur = {{ enabled = {'true' if enabled else 'false'} }} }} }})"])
+    return rc == 0 and out.strip() == "ok"
+
+
+def log_event(obj: dict) -> None:
+    path = session_dir()
+    if path:
+        append_json(path / "events.jsonl", obj)
+
+
+def restore_stale_probe(events_path: Path | None = None) -> None:
+    try:
+        state = json.loads(PROBE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if time.time() - state.get("started_unix", 0) < PROBE_SECONDS + 30:
+        return
+    if set_blur(True):
+        PROBE_FILE.unlink(missing_ok=True)
+        obj = {"type": "probe_ended", "timestamp": now_iso(), "variable": "blur", "reason": "restored by recorder (probe process did not finish)"}
+        append_json(events_path, obj) if events_path else log_event(obj)
+
+
+def probe() -> int:
+    """Disable blur for PROBE_SECONDS, then restore. Press again to cancel early.
+
+    Marks made while the probe is active say whether stutter persists without
+    blur; the analysis compares mark rates with and without the probe.
+    """
+    if PROBE_FILE.exists():
+        PROBE_FILE.unlink(missing_ok=True)  # the running probe sees this and restores
+        notify("Blur probe cancelled", "Blur restored.")
+        return 0
+    blur, err = hyprctl_json(["getoption", "decoration:blur:enabled"])
+    if not isinstance(blur, dict):
+        notify("Blur probe failed", f"hyprctl: {err}", "normal")
+        return 1
+    if not bool(blur.get("bool", blur.get("int"))):
+        notify("Blur probe skipped", "Blur is already disabled.")
+        return 0
+    started = time.time()
+    STATE.mkdir(parents=True, exist_ok=True)
+    PROBE_FILE.write_text(json.dumps({"started_unix": started, "variable": "blur", "pid": os.getpid()}))
+    if not set_blur(False):
+        PROBE_FILE.unlink(missing_ok=True)
+        notify("Blur probe failed", "Could not disable blur.", "normal")
+        return 1
+    log_event({"type": "probe_started", "timestamp": now_iso(), "variable": "blur", "seconds": PROBE_SECONDS})
+    notify("Blur OFF for 2 minutes", "Move between windows. Still stuttering? Press Super+Shift+M.\nSuper+Shift+B again cancels.", "normal")
+    reason = "timer elapsed"
+    while time.time() - started < PROBE_SECONDS:
+        time.sleep(1)
+        if not PROBE_FILE.exists():
+            reason = "cancelled by user"
+            break
+    set_blur(True)
+    PROBE_FILE.unlink(missing_ok=True)
+    log_event({"type": "probe_ended", "timestamp": now_iso(), "variable": "blur", "reason": reason})
+    if reason == "timer elapsed":
+        notify("Blur restored", "Probe finished.")
+    return 0
+
+
+def new_session() -> int:
+    STATE.mkdir(parents=True, exist_ok=True)
+    service = shutil.which("systemctl")
+    if service:
+        command([service, "--user", "stop", "stutter-watch.service"], 10)
+    path = start_session()
+    print(f"Created new seven-day session: {path}")
+    if service:
+        rc, out, err = command([service, "--user", "start", "stutter-watch.service"], 10)
+        if rc != 0:
+            print(err or out or "Could not start the user service", file=sys.stderr)
+            return 1
+    return 0
+
+
+def bundle() -> int:
+    path = session_dir()
+    if not path:
+        print("No capture session found.", file=sys.stderr)
+        return 1
+    manifest = load_manifest(path)
+    if manifest.get("status") == "recording":
+        print("Stop the recorder first so the bundle is consistent: systemctl --user stop stutter-watch.service", file=sys.stderr)
+        return 1
+    target = SESSIONS / f"{path.name}.tar.gz"
+    try:
+        with tarfile.open(target, "w:gz", compresslevel=6) as archive:
+            archive.add(path, arcname=path.name)
+            if NOTES.is_file():
+                archive.add(NOTES, arcname=f"{path.name}/NOTES.md")
+    except (OSError, tarfile.TarError) as exc:
+        print(f"Could not create bundle: {exc}", file=sys.stderr)
+        return 1
+    print(target)
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Record low-overhead system telemetry for a seven-day stutter investigation.")
+    sub = parser.add_subparsers(dest="action")
+    sub.add_parser("run", help=argparse.SUPPRESS)
+    sub.add_parser("status", help="Show the current capture session")
+    p_mark = sub.add_parser("mark", help="Record the time you notice a stutter")
+    p_mark.add_argument("text", nargs="*", help="Optional short note (avoid private content)")
+    sub.add_parser("probe", help="Disable Hyprland blur for 2 minutes (run again to cancel)")
+    sub.add_parser("review", help="Review suspected stutters from the last game session")
+    p_prompts = sub.add_parser("prompts", help="Turn detector pop-ups on/off (detections are always logged)")
+    p_prompts.add_argument("state", nargs="?", choices=["on", "off", "status"], default="status")
+    sub.add_parser("new-session", help="Start a fresh seven-day session")
+    sub.add_parser("bundle", help="Compress a stopped or completed capture for analysis")
+    args = parser.parse_args()
+    action = args.action or "run"
+    if action == "run":
+        return run_recorder()
+    if action == "status":
+        return status()
+    if action == "mark":
+        return mark(" ".join(args.text))
+    if action == "probe":
+        return probe()
+    if action == "review":
+        return review_command()
+    if action == "prompts":
+        return prompts_command(args.state)
+    if action == "new-session":
+        return new_session()
+    if action == "bundle":
+        return bundle()
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

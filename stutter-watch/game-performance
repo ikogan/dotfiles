@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# /usr/local/bin/game-performance — shadows CachyOS's /usr/bin/game-performance.
+#
+# Steam's PATH puts /usr/local/bin before /usr/bin, so every game whose launch
+# options are already `game-performance %command%` goes through here unchanged.
+#
+# 1) While the game runs we hold a *shared* flock on $XDG_RUNTIME_DIR/game-active.lock.
+#    stutter-watch tests that lock to
+#    know a game is running. It is released automatically when the game and
+#    everything it spawned exit — even on a crash — so it can never go stale.
+#    --no-fork: flock execs directly, so no extra process sits in the game's tree.
+#
+# 2) Unless the launch already configures MangoHud, run the game under MangoHud with
+#    the stutter-watch profile (small HUD + per-frame log that stutter-watch reads
+#    live). Opt a game out with: STUTTER_WATCH_MANGOHUD=0 game-performance %command%
+#    For gamescope launches, MangoHud goes after `--` so it measures the game's own
+#    frames rather than gamescope's.
+
+args=("$@")
+cfg="${HOME}/.config/MangoHud/stutter-watch.conf"
+already_mango=0
+for a in "${args[@]}"; do
+    case "$a" in mangohud|*/mangohud|--mangoapp) already_mango=1 ;; esac
+done
+if [ "${STUTTER_WATCH_MANGOHUD:-1}" != "0" ] && [ "$already_mango" = 0 ] \
+   && [ -z "${MANGOHUD:-}${MANGOHUD_CONFIG:-}${MANGOHUD_CONFIGFILE:-}" ] \
+   && [ -r "$cfg" ] && [ -x /usr/bin/mangohud ]; then
+    export MANGOHUD_CONFIGFILE="$cfg"
+    case "${args[0]:-}" in
+        gamescope|*/gamescope)
+            out=()
+            inserted=0
+            for a in "${args[@]}"; do
+                out+=("$a")
+                if [ "$inserted" = 0 ] && [ "$a" = "--" ]; then
+                    out+=(/usr/bin/mangohud)
+                    inserted=1
+                fi
+            done
+            args=("${out[@]}")
+            ;;
+        *)
+            args=(/usr/bin/mangohud "${args[@]}")
+            ;;
+    esac
+fi
+
+lockdir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [ -d "$lockdir" ] && [ -w "$lockdir" ]; then
+    exec /usr/bin/flock --shared --no-fork "$lockdir/game-active.lock" /usr/bin/game-performance "${args[@]}"
+fi
+# Never block a game launch over the lock.
+exec /usr/bin/game-performance "${args[@]}"
