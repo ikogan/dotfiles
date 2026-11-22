@@ -10,6 +10,7 @@ Not using a dotfiles manager tool yet, this will setup:
 - Neovim (main editor, see [Editors](#editors))
 - Vim (basic fallback)
 - kubectl krew plugins
+- Hyprland config (see [Hyprland](#hyprland))
 
 **Note**: The install will overwrite existing configurations without prompting.
 
@@ -35,6 +36,21 @@ copies it into the service's env file (see [MCP servers](#mcp-servers)).
 `DOTFILES_AUTO_SWITCH_ZSH=1` makes interactive bash sessions immediately `exec zsh` when zsh is available.
 
 `install.sh` uses `${HOME}/.tmp` for temp working directories, so it does not rely on `/tmp` being executable.
+
+## Hyprland
+
+`hypr/config/` replaces `~/.config/hypr/config/`. It started from the CachyOS
+Hyprland + Noctalia defaults. `install.sh` only links that folder and adds one
+`require("config.dotfiles")` line to `~/.config/hypr/hyprland.lua`.
+`config/dotfiles.lua` loads the files the stock `hyprland.lua` doesn't. The rest
+of `~/.config/hypr` (`hyprland.lua`, `hyprmon.lua`, `noctalia.lua`,
+`hyprland-settings.lua`, the wallpaper) is written by HyprMon, Noctalia and the
+Hyprland Settings panel, so it isn't tracked.
+
+`stutter-watch/` is a desktop and game stutter recorder. It isn't installed by
+`install.sh`; run `stutter-watch/install.sh` (add `--system` for the
+`game-performance` wrapper) and `stutter-watch/uninstall.sh` to remove it. See
+[stutter-watch/README.md](stutter-watch/README.md).
 
 ## Editors
 

@@ -687,6 +687,33 @@ if has_cmd Hyprland || has_cmd hyprctl; then
         printf '[Service]\nMemoryMin=512M\n' > "${HYPR_DROPIN}/50-MemoryMin.conf"
         systemctl --user daemon-reload || warn "⚠️  Failed to reload systemd user units."
     fi
+
+    # Only config/ is linked: HyprMon, Noctalia and the Hyprland Settings
+    # panel write the other files under ~/.config/hypr, including hyprland.lua.
+    info "Linking Hyprland config..."
+    rm -Rf "${HOME}/.config/hypr/config"
+    mkdir -p "${HOME}/.config/hypr"
+    ln -sfn "${SCRIPTPATH}/hypr/config" "${HOME}/.config/hypr/config"
+
+    HYPR_MAIN="${HOME}/.config/hypr/hyprland.lua"
+    HYPR_REQUIRE='require("config.dotfiles")'
+    if [[ ! -f "${HYPR_MAIN}" ]]; then
+        warn "⚠️  ${HYPR_MAIN} not found; add ${HYPR_REQUIRE} to your Hyprland config."
+    elif ! grep -qxF "${HYPR_REQUIRE}" "${HYPR_MAIN}"; then
+        # config.dotfiles loads these, so drop any copies added by hand.
+        if grep -qxF 'require("config.groups")' "${HYPR_MAIN}"; then
+            sed -i \
+                -e 's/^require("config\.groups")$/'"${HYPR_REQUIRE}"'/' \
+                -e '/^require("config\.user")$/d' \
+                "${HYPR_MAIN}"
+        else
+            sed -i '/^require("config\.user")$/d' "${HYPR_MAIN}"
+            printf '\n%s\n' "${HYPR_REQUIRE}" >> "${HYPR_MAIN}"
+        fi
+    fi
+    if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+        hyprctl reload >/dev/null || warn "⚠️  Hyprland config reload failed."
+    fi
 fi
 
 echo "Installing Oh-My-Tmux..."
