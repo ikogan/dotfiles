@@ -48,7 +48,7 @@ if not in_container then
                     1
                 )
                 if choice == 1 then
-                    vim.cmd("Lazy! restore")
+                    vim.cmd("Lazy! install")
                 end
                 return
             end

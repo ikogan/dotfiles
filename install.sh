@@ -3,6 +3,8 @@ SCRIPTPATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 || exit ; pwd -P )"
 HAVE_GUM=""
 TEMP_DIR=""
 PATH="${HOME}"/.local/bin:"${PATH}"
+# Krew installs kubectl-krew here; kubectl only finds it on PATH.
+PATH="${KREW_ROOT:-${HOME}/.krew}/bin:${PATH}"
 
 if [[ "${SHELL}" = "/bin/fish" ]] || [[ "${SHELL}" = "/usr/bin/fish" ]]; then
     echo "The fish shell is not supported, change your shell to zsh." 1>&2
@@ -852,10 +854,10 @@ if [[ -z "${IN_DEVCONTAINER}" ]]; then
         NVIM_PARSER_CMD="lua require('nvim-treesitter').install(require('config.parsers')):wait(600000)"
         if [[ -n "${HAVE_GUM}" ]]; then
             gum spin --show-error --title="Installing Neovim plugins and parsers..." -- \
-                sh -c 'nvim --headless "+Lazy! restore" +qa && nvim --headless "+'"${NVIM_PARSER_CMD}"'" +qa' \
+                sh -c 'nvim --headless "+Lazy! install" "+Lazy! restore" +qa && nvim --headless "+'"${NVIM_PARSER_CMD}"'" +qa' \
                 || warn "⚠️  Neovim plugin install failed. Open nvim to retry."
         else
-            { nvim --headless "+Lazy! restore" +qa && nvim --headless "+${NVIM_PARSER_CMD}" +qa; } >/dev/null 2>&1 \
+            { nvim --headless "+Lazy! install" "+Lazy! restore" +qa && nvim --headless "+${NVIM_PARSER_CMD}" +qa; } >/dev/null 2>&1 \
                 || warn "⚠️  Neovim plugin install failed. Open nvim to retry."
         fi
     else

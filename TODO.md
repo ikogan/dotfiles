@@ -56,7 +56,7 @@ items off as they're verified, and add new work or decisions as they come up.
 - [ ] Generate `nvim/lazy-lock.json` by running `nvim` or `install.sh` once, then commit it
 - [ ] Confirm the treesitter parsers install (check `:checkhealth nvim-treesitter` and `helm` availability)
 - [x] Install djlint into `~/.venv` from `install.sh` (pinned to 1.49.2, on `PATH` via `shared-core.sh`)
-- [x] Plugin prompts on the host: when plugins are missing, Neovim asks to install them (`Lazy! restore`). When updates exist, it asks to update. Both are skipped in containers and when no UI is attached. `install.sh` installs the pinned versions and parsers without updating.
+- [x] Plugin prompts on the host: when plugins are missing, Neovim asks to install them at the `lazy-lock.json` versions (`Lazy! install`; `Lazy! restore` skips plugins that aren't installed). When updates exist, it asks to update. Both are skipped in containers and when no UI is attached. `install.sh` installs the pinned versions and parsers without updating.
 - [x] Hyprland stays out of swap: `install.sh` sets `MemorySwapMax=0` and `MemoryMin=512M` on `wayland-wm@hyprland.desktop.service` when Hyprland is installed.
 - [ ] Install the other formatters and linters on this machine: `stylua`, `shfmt`, `yamlfmt`, `ruff`, `shellcheck`
 - [ ] Sign in to Copilot in Neovim (`:Copilot auth`) and in Vim (`:Copilot setup`)
