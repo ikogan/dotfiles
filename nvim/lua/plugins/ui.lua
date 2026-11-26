@@ -24,6 +24,12 @@ return {
         opts = {
             options = {
                 mode = "buffer",
+                close_command = function(buf)
+                    require("mini.bufremove").delete(buf, false)
+                end,
+                right_mouse_command = function(buf)
+                    require("mini.bufremove").delete(buf, false)
+                end,
                 separator_style = "thin",
                 offsets = {
                     { filetype = "neo-tree", text = "Files", highlight = "Directory", text_align = "left" },
@@ -46,6 +52,7 @@ return {
         opts = {
             filesystem = {
                 follow_current_file = { enabled = true },
+                use_libuv_file_watcher = true,
                 hijack_netrw_behavior = "disabled",
                 filtered_items = { visible = true },
             },
@@ -129,7 +136,7 @@ return {
         opts = {
             spec = {
                 { "<leader>f", group = "find" },
-                { "<leader>h", group = "hunks" },
+                { "<leader>g", group = "git" },
                 { "<leader>d", group = "diagnostics" },
                 { "<leader>c", group = "code" },
             },

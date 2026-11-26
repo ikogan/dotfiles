@@ -15,6 +15,9 @@ items off as they're verified, and add new work or decisions as they come up.
 - `rg` and `fzf` are system packages. `install.sh` warns when they're missing; it
   doesn't install them.
 - No language servers. Diagnostics come from `nvim-lint` running installed linters on open, save, and leaving insert mode. Formatting comes from `conform.nvim`.
+- Copilot starts when a file opens, not on `InsertEnter`, so it's signed in and attached before the first edit. It's on in every file type except `help`.
+- Buffers close through mini.bufremove, never plain `:bdelete`, so closing a tab doesn't close its window.
+- Git hunk keys live under `,g`. `,h` stays the horizontal split.
 - Keymaps only come from plugins that do real work. Keybinding-only wrappers are
   not added.
 
@@ -30,16 +33,20 @@ items off as they're verified, and add new work or decisions as they come up.
 - [x] File tree: neo-tree (`,n`), with git status. Opens automatically when the window is 120+ columns wide, and closes when it's narrower. `nvim <dir>` cds into the directory and opens the same tree. netrw is disabled, so there's one file tree. Closing the last editor window with `:q` also closes the tree and exits Neovim.
 - [x] Keymap hints: which-key
 - [x] Indent guides (`,ig`) and rainbow delimiters
-- [x] Git signs and hunk actions: gitsigns (`]c`, `[c`, `,hp`, `,hs`, `,hr`, `,hb`, `,hd`). Clicking the gutter previews a hunk.
+- [x] Git signs and hunk actions: gitsigns (`]c`, `[c`, `,gp`, `,gP`, `,gs`, `,gr`, `,gb`, `,gd`). Clicking the gutter previews a hunk. Moved from `,h…` so `,h` (split) doesn't wait for `timeoutlen`.
+- [x] Inline diff review: `,gi` toggles old lines as virtual lines, word diff, and line highlights for the whole buffer. `,gB` changes the diff base for all buffers (`HEAD`, a branch, or a commit; empty input goes back to the index).
+- [x] Multi-file review: diffview.nvim (`,gv` open, `,gq` close, `,gh` file history, `:DiffviewOpen main...HEAD` for a branch), loaded on its commands and keys only
 - [x] Git commands: vim-fugitive, loaded on `:G*` commands only
 - [x] Fuzzy finder: fzf-lua (`,ff`, `,fg`, `,fb`, `,fr`, `,fh`)
 - [x] Movement: flash (`s`)
 - [x] Alignment: mini.align (`ga`), manual
 - [x] Auto-pairs: mini.pairs. Not yet tested for overtype behavior; deferred by request
 - [x] Trailing whitespace highlighting: mini.trailspace
+- [x] Closing buffers: mini.bufremove for `,c`, the bufferline `x`, and right-click. The window stays open and shows another buffer, so the file tree never takes focus. Unsaved buffers ask before closing (bufferline's default was `bdelete!`, which discarded them).
+- [x] Refresh: `,R` runs `checktime` and refreshes gitsigns, neo-tree, and diffview. neo-tree uses the libuv file watcher, so files added or deleted outside Neovim show up on their own.
 - [x] EditorConfig: editorconfig-vim
 - [x] Sessions: persistence.nvim, restores the project session when started with no arguments
-- [x] Copilot ghost text: copilot.lua, `Tab` accepts (or inserts a tab when there's no suggestion). `Alt-]`/`Alt-[` cycle; `Ctrl-]` dismisses.
+- [x] Copilot ghost text: copilot.lua, loaded on `BufReadPost`/`BufNewFile` and enabled for every file type (including YAML, Markdown and git commits, which copilot.lua disables by default). `Tab` accepts (or inserts a tab when there's no suggestion). `Alt-]`/`Alt-[` cycle; `Ctrl-]` dismisses.
 - [x] Completion menu: blink.cmp (path, snippets, buffer)
 - [x] Automatic linting: nvim-lint runs shellcheck, ruff, luacheck, and hadolint on open, save, and leaving insert mode. Linters that aren't installed are skipped.
 - [x] No LSP: language servers were dropped (pyright, bashls, yamlls, helm_ls, lua_ls, ruff server). They need project environments that containers don't have.

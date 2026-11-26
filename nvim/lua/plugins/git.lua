@@ -30,11 +30,26 @@ return {
                     return "<Ignore>"
                 end, "Previous changed hunk", { expr = true })
 
-                map("n", "<leader>hp", gs.preview_hunk, "Preview hunk diff")
-                map("n", "<leader>hs", gs.stage_hunk, "Stage hunk")
-                map("n", "<leader>hr", gs.reset_hunk, "Reset hunk")
-                map("n", "<leader>hb", gs.blame_line, "Blame line")
-                map("n", "<leader>hd", gs.diffthis, "Diff file against index")
+                map("n", "<leader>gp", gs.preview_hunk, "Preview hunk in popup")
+                map("n", "<leader>gP", gs.preview_hunk_inline, "Preview hunk inline")
+                map("n", "<leader>gi", function()
+                    local on = not require("gitsigns.config").config.show_deleted
+                    gs.toggle_deleted(on)
+                    gs.toggle_word_diff(on)
+                    gs.toggle_linehl(on)
+                end, "Toggle inline diff")
+                map("n", "<leader>gs", gs.stage_hunk, "Stage hunk")
+                map("n", "<leader>gr", gs.reset_hunk, "Reset hunk")
+                map("n", "<leader>gb", gs.blame_line, "Blame line")
+                map("n", "<leader>gd", gs.diffthis, "Diff file against base")
+                map("n", "<leader>gB", function()
+                    vim.ui.input({ prompt = "Diff base (empty for index): ", default = "HEAD" }, function(base)
+                        if base == nil then
+                            return
+                        end
+                        gs.change_base(base ~= "" and base or nil, true)
+                    end)
+                end, "Change diff base")
             end,
         },
         config = function(_, opts)
@@ -53,6 +68,23 @@ return {
                 return "<Ignore>"
             end, { expr = true, desc = "Click gutter to preview hunk" })
         end,
+    },
+    {
+        "sindrets/diffview.nvim",
+        cmd = {
+            "DiffviewOpen",
+            "DiffviewClose",
+            "DiffviewFileHistory",
+            "DiffviewToggleFiles",
+            "DiffviewFocusFiles",
+            "DiffviewRefresh",
+        },
+        keys = {
+            { "<leader>gv", "<cmd>DiffviewOpen<cr>", desc = "Review all changes" },
+            { "<leader>gh", "<cmd>DiffviewFileHistory %<cr>", desc = "File history" },
+            { "<leader>gq", "<cmd>DiffviewClose<cr>", desc = "Close review" },
+        },
+        opts = {},
     },
     {
         "tpope/vim-fugitive",

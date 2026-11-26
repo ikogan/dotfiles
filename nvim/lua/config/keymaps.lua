@@ -18,7 +18,22 @@ map("n", "<leader>z", "<cmd>bprevious<cr>", { desc = "Previous buffer" })
 map("n", "<leader>q", "<cmd>bprevious<cr>", { desc = "Previous buffer" })
 map("n", "<leader>x", "<cmd>bnext<cr>", { desc = "Next buffer" })
 map("n", "<leader>w", "<cmd>bnext<cr>", { desc = "Next buffer" })
-map("n", "<leader>c", "<cmd>bdelete<cr>", { desc = "Close buffer" })
+map("n", "<leader>c", function()
+    require("mini.bufremove").delete(0, false)
+end, { desc = "Close buffer" })
+
+map("n", "<leader>R", function()
+    vim.cmd("checktime")
+    if package.loaded["gitsigns"] then
+        require("gitsigns").refresh()
+    end
+    if package.loaded["neo-tree"] then
+        require("neo-tree.sources.manager").refresh("filesystem")
+    end
+    if package.loaded["diffview"] then
+        vim.cmd("DiffviewRefresh")
+    end
+end, { desc = "Reload files and refresh tree and git views" })
 
 -- Paths
 map("n", "<leader>.", "<cmd>lcd %:p:h<cr>", { desc = "cd to file directory" })

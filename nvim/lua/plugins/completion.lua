@@ -2,8 +2,16 @@ return {
     {
         "zbirenbaum/copilot.lua",
         cmd = "Copilot",
-        event = "InsertEnter",
+        event = { "BufReadPost", "BufNewFile" },
         opts = {
+            filetypes = {
+                yaml = true,
+                markdown = true,
+                gitcommit = true,
+                gitrebase = true,
+                help = false,
+                ["*"] = true,
+            },
             suggestion = {
                 enabled = true,
                 auto_trigger = true,

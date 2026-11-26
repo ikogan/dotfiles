@@ -7,6 +7,7 @@ return {
             require("mini.align").setup()
             require("mini.pairs").setup()
             require("mini.trailspace").setup()
+            require("mini.bufremove").setup()
         end,
     },
     {

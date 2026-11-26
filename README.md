@@ -76,24 +76,29 @@ come from your package manager.
 ### Neovim cheat sheet
 
 `,` is the leader key. Press `,` and wait a moment, and **which-key** shows the
-next keys you can press. Use `,f`, `,h`, `,d`, and `,c` to see their groups.
+next keys you can press. Use `,f`, `,g`, `,d`, and `,c` to see their groups.
 
 | Keys | What it does | Plugin |
 |------|--------------|--------|
-| `,n` | Toggle the file tree (git status shown) | neo-tree |
+| `,n` | Toggle the file tree (git status shown; updates when files change on disk) | neo-tree |
 | `Tab` / `Shift-Tab` | Next / previous open buffer tab | bufferline |
 | `Shift-t` | New empty buffer tab | built-in |
-| `,c` | Close current buffer | built-in |
+| `,c` or the tab's `x` | Close the buffer and keep the window, showing another open buffer. Asks first if there are unsaved changes | mini.bufremove |
+| `,R` | Reload files changed on disk and refresh the file tree, git signs, and diffview | built-in |
 | `,ff` | Find files | fzf-lua |
 | `,fg` | Live grep the project | fzf-lua |
 | `,fb` | Pick an open buffer | fzf-lua |
 | `,fr` | Recently opened files | fzf-lua |
 | `,fh` | Search help | fzf-lua |
 | `]c` / `[c` | Next / previous changed hunk | gitsigns |
-| `,hp` | Preview the changed lines (the diff) | gitsigns |
-| `,hs` / `,hr` | Stage / reset the hunk | gitsigns |
-| `,hb` | Blame the current line | gitsigns |
-| `,hd` | Diff the whole file against the index | gitsigns |
+| `,gp` / `,gP` | Preview the hunk in a popup / inline | gitsigns |
+| `,gi` | Toggle the inline diff for every hunk (old lines, word diff, line colours) | gitsigns |
+| `,gB` | Change the diff base (`HEAD`, `main`, a commit; empty for the index) | gitsigns |
+| `,gs` / `,gr` | Stage / reset the hunk | gitsigns |
+| `,gb` | Blame the current line | gitsigns |
+| `,gd` | Diff the whole file against the base in a split | gitsigns |
+| `,gv` / `,gq` | Open / close the review of all changed files | diffview |
+| `,gh` | History of the current file | diffview |
 | Click gutter | Preview the hunk under the click | gitsigns |
 | `:Git`, `:Gblame`, `:Gdiffsplit` | Git commands | vim-fugitive |
 | `s` | Jump to any visible text: press `s`, type letters, press the label | flash |
@@ -101,7 +106,7 @@ next keys you can press. Use `,f`, `,h`, `,d`, and `,c` to see their groups.
 | `,dd` | Show the diagnostic under the cursor | nvim-lint |
 | `,dl` | List diagnostics in the location list | nvim-lint |
 | `]d` / `[d` | Next / previous diagnostic | built-in |
-| `Tab` (insert mode) | Accept the Copilot suggestion, or insert a tab | copilot.lua |
+| `Tab` (insert mode) | Accept the Copilot suggestion, or insert a tab. Copilot starts when a file opens and runs in every file type | copilot.lua |
 | `Alt-]` / `Alt-[` | Next / previous Copilot suggestion | copilot.lua |
 | `Ctrl-]` | Dismiss Copilot suggestion | copilot.lua |
 | `,cf` | Format the buffer | conform.nvim |
