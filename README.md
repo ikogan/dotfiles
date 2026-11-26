@@ -25,6 +25,7 @@ DOTFILES_AUTO_SWITCH_ZSH=1
 GITEA_HOST=https://git.example.com
 GRAFANA_URL=https://grafana.example.com
 RANCHER_URL=https://rancher.example.com
+SPARKYFITNESS_URL=https://fitness.example.com
 ```
 
 `GITEA_HOST` is the Gitea server for the gitea-mcp service, and `RANCHER_URL`
@@ -32,6 +33,8 @@ is what the Rancher login reminder tells you to run `rancher login` against.
 Both services read `~/.dotfilesrc` themselves because systemd doesn't load the
 shell config. `GRAFANA_URL` is the Grafana server for mcp-grafana; `setup-mcp`
 copies it into the service's env file (see [MCP servers](#mcp-servers)).
+`SPARKYFITNESS_URL` is the SparkyFitness server whose `/mcp` endpoint
+`setup-mcp` gives to each agent harness.
 
 `DOTFILES_AUTO_SWITCH_ZSH=1` makes interactive bash sessions immediately `exec zsh` when zsh is available.
 
@@ -256,7 +259,8 @@ into `~/.local/bin`, then runs
 - translates the MCP endpoints to the current docker bridge gateway (read from
   `docker0`) so the same address is reachable from both the host and containers,
 - writes every server in `mcp.servers` of `harness/config.yaml` (with
-  `${MCP_ROUTER}` filled in) into each installed agent harness: OpenCode v2's
+  `${MCP_ROUTER}` and any other `${NAME}` from `~/.dotfilesrc` filled in) into
+  each installed agent harness: OpenCode v2's
   `mcp.servers` section (`type: "remote"`),
   Claude Code's user-scope servers (with `claude mcp add-json -s user`), and
   `mcpServers` in Copilot's `~/.copilot/mcp-config.json` (`type: "http"`).
@@ -271,9 +275,25 @@ Servers:
 | mcp-grafana | 8280 | `http://<router>:8280/mcp` |
 | gitea-mcp | 8380 | `http://<router>:8380/mcp` |
 | Atlassian (hosted) | — | `https://mcp.atlassian.com/v2/mcp` |
+| SparkyFitness (self-hosted) | — | `${SPARKYFITNESS_URL}/mcp` |
 
 The Atlassian server runs on Atlassian's side, so nothing is installed for it.
 Each harness signs in with OAuth on first use: run `/mcp` in Claude Code.
+
+SparkyFitness authenticates with an API key (Settings → Developer &
+Integrations → API Key Management; Read-only unless agents should write data)
+sent as a bearer token. The key lives in the libsecret keyring; an interactive
+`setup-mcp` run prompts for it, or store it yourself:
+
+```bash
+secret-tool store --label='sparky-fitness MCP token' \
+    service sparkyfitness-mcp url "$SPARKYFITNESS_URL"
+```
+
+`setup-mcp` copies the key into each harness's MCP config (mode 0600), since
+those tools send the header themselves. Until `SPARKYFITNESS_URL` and the key
+are both set, the server is skipped. Any server in `harness/config.yaml` can use
+this with `bearer_keyring: <service>`.
 
 Grafana credentials (`GRAFANA_URL` / `GRAFANA_SERVICE_ACCOUNT_TOKEN`) are
 written to `~/.config/mcp/mcp-grafana.env` (mode 0600). The URL comes from

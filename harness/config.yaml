@@ -25,16 +25,27 @@ mcp:
   startup_timeout: 45s
 
   # Add a server here to give it to every harness. setup-mcp fills in
-  # ${MCP_ROUTER} with the docker bridge IP; other URLs are used as written.
-  #   OpenCode:    mcp.servers.<name>: {type: remote, url}
-  #   Claude Code: claude mcp add-json -s user <name> {type: http, url}
-  #   Copilot CLI: mcpServers.<name>: {type: http, url, tools: ["*"]}
+  # ${MCP_ROUTER} with the docker bridge IP and any other ${NAME} from the
+  # environment or ~/.dotfilesrc; a server whose ${NAME} is unset is skipped.
+  #   OpenCode:    mcp.servers.<name>: {type: remote, url, headers}
+  #   Claude Code: claude mcp add-json -s user <name> {type: http, url, headers}
+  #   Copilot CLI: mcpServers.<name>: {type: http, url, headers, tools: ["*"]}
+  #
+  # bearer_keyring: <service> sends "Authorization: Bearer <token>", with the
+  # token read from the libsecret keyring entry service=<service>,
+  # url=<scheme://host of the URL>. setup-mcp prompts for it when it's missing.
+  # The token ends up in each harness's config file (all mode 0600).
   servers:
     grafana:    { url: "http://${MCP_ROUTER}:8280/mcp" }
     kubernetes: { url: "http://${MCP_ROUTER}:8180/mcp" }
     gitea:      { url: "http://${MCP_ROUTER}:8380/mcp" }
     # Hosted by Atlassian; sign in with OAuth from each harness.
     atlassian:  { url: "https://mcp.atlassian.com/v2/mcp" }
+    # Self-hosted SparkyFitness; the token is an API key from Settings ->
+    # Developer & Integrations -> API Key Management.
+    sparky-fitness:
+      url: "${SPARKYFITNESS_URL}/mcp"
+      bearer_keyring: sparkyfitness-mcp
 
 # Settings for one harness only, merged as written into:
 #   opencode: ~/.config/opencode/opencode.json

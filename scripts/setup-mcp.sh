@@ -159,16 +159,87 @@ yq_missing_warning() {
   warn "  Re-run install.sh to install it in ~/.local/bin, or: sudo pacman -S go-yq"
 }
 
-# Print the MCP servers from harness/config.yaml as a compact JSON object of
-# name -> URL, with ${MCP_ROUTER} replaced by the docker router IP.
-mcp_servers_json() {
-  local router="$1"
+# Set by --rebind: the timer runs every minute, so servers skipped for a missing
+# setting or token don't warn there; the full install already did.
+QUIET_SKIPS=0
+
+skip_warn() {
+  [[ "$QUIET_SKIPS" == "1" ]] || warn "$@"
+}
+
+# Print the scheme://host[:port] part of a URL (the keyring entry's url).
+url_origin() {
+  [[ "$1" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://[^/]+) ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# Print each server from harness/config.yaml as a tab-separated line:
+# name, URL (${MCP_ROUTER} and other ${NAME}s filled in), bearer_keyring
+# service (or empty). Servers with an unset ${NAME} are skipped with a warning.
+mcp_server_lines() {
+  local router="$1" raw name url service var val
   has_yq || { yq_missing_warning; return 1; }
   [[ -f "$HARNESS_CONFIG" ]] || { warn "missing $HARNESS_CONFIG"; return 1; }
-  # shellcheck disable=SC2016
-  MCP_ROUTER="$router" "$YQ" -o json -I 0 \
-    '.mcp.servers | map_values(.url | sub("\$\{MCP_ROUTER\}", strenv(MCP_ROUTER)))' \
-    "$HARNESS_CONFIG"
+  raw="$("$YQ" -o json -I 0 '.mcp.servers' "$HARNESS_CONFIG")" || return 1
+  while IFS=$'\t' read -r name url service; do
+    # shellcheck disable=SC2016  # a literal ${MCP_ROUTER}
+    url="${url//'${MCP_ROUTER}'/$router}"
+    while [[ "$url" =~ \$\{([A-Za-z_][A-Za-z0-9_]*)\} ]]; do
+      var="${BASH_REMATCH[1]}"
+      val="${!var:-$(dotfilesrc_var "$var")}"
+      if [[ -z "$val" ]]; then
+        skip_warn "skipping the $name MCP server: set $var in ~/.dotfilesrc"
+        continue 2
+      fi
+      url="${url//"\${$var}"/${val%/}}"
+    done
+    printf '%s\t%s\t%s\n' "$name" "$url" "$service"
+  done < <(jq -r 'to_entries[] | [.key, .value.url, (.value.bearer_keyring // "")] | @tsv' <<< "$raw")
+}
+
+# Prompt for and store any bearer_keyring token that isn't in the keyring yet.
+# Only the full interactive install prompts; otherwise mcp_servers_json warns.
+ensure_mcp_tokens() {
+  local router="$1" name url service origin token
+  [[ -t 0 && -t 1 ]] && has_cmd gum && has_cmd secret-tool || return 0
+  while IFS=$'\t' read -r name url service; do
+    [[ -n "$service" ]] || continue
+    origin="$(url_origin "$url")"
+    [[ -n "$(secret-tool lookup service "$service" url "$origin" 2>/dev/null)" ]] && continue
+    info "The $name MCP server at $origin needs a token:"
+    token="$(gum input --password --prompt "$name token: ")"
+    [[ -n "$token" ]] || continue
+    if printf '%s' "$token" | secret-tool store --label="$name MCP token" service "$service" url "$origin"; then
+      info "stored the $name token in the keyring (service=$service url=$origin)"
+    else
+      warn "failed to store the $name token in the keyring"
+    fi
+  done < <(mcp_server_lines "$router")
+}
+
+# Print the MCP servers as a compact JSON object of name -> {url, headers?}.
+# Servers whose bearer_keyring token can't be read are left out, so an existing
+# harness entry for them stays as it is.
+mcp_servers_json() {
+  local router="$1" lines name url service origin token out='{}'
+  lines="$(mcp_server_lines "$router")" || return 1
+  while IFS=$'\t' read -r name url service; do
+    [[ -n "$name" ]] || continue
+    if [[ -z "$service" ]]; then
+      out="$(jq -c --arg n "$name" --arg u "$url" '.[$n] = {url: $u}' <<< "$out")"
+      continue
+    fi
+    origin="$(url_origin "$url")"
+    token=""
+    has_cmd secret-tool && token="$(secret-tool lookup service "$service" url "$origin" 2>/dev/null)"
+    if [[ -z "$token" ]]; then
+      skip_warn "skipping the $name MCP server: no token in the keyring. Store one with:"
+      skip_warn "  secret-tool store --label='$name MCP token' service $service url $origin"
+      continue
+    fi
+    out="$(jq -c --arg n "$name" --arg u "$url" --arg t "$token" \
+      '.[$n] = {url: $u, headers: {Authorization: ("Bearer " + $t)}}' <<< "$out")"
+  done <<< "$lines"
+  printf '%s\n' "$out"
 }
 
 # --- systemd helpers --------------------------------------------------------
@@ -262,7 +333,7 @@ translate_opencode_config() {
     if ! jq --argjson s "$servers" \
       '.mcp = ((.mcp // {})
         | del(.[$s | keys[]])
-        | .servers = ((.servers // {}) + ($s | map_values({"type": "remote", "url": .}))))' \
+        | .servers = ((.servers // {}) + ($s | map_values({"type": "remote"} + .))))' \
       "$OPENCODE_CONFIG" > "$tmp"; then
       rm -f "$tmp"
       warn "failed to translate $OPENCODE_CONFIG with jq"
@@ -293,7 +364,7 @@ mcp = cfg.setdefault("mcp", {})
 for name in shared:
     mcp.pop(name, None)
 servers = mcp.setdefault("servers", {})
-servers.update({name: {"type": "remote", "url": url} for name, url in shared.items()})
+servers.update({name: {"type": "remote", **spec} for name, spec in shared.items()})
 json.dump(cfg, sys.stdout, indent=2)
 PY
     rc=$?
@@ -358,7 +429,7 @@ translate_copilot_config() {
   # -s handles a missing (empty) config: `.[0] // {}` starts from an empty one.
   if ! jq -s --argjson s "$servers" \
       '(.[0] // {}) | .mcpServers = ((.mcpServers // {})
-        + ($s | map_values({"type": "http", "url": ., "tools": ["*"]})))' \
+        + ($s | map_values({"type": "http"} + . + {"tools": ["*"]})))' \
       "$src" > "$tmp"; then
     rm -f "$tmp"
     warn "failed to translate $COPILOT_MCP_CONFIG with jq"
@@ -386,7 +457,7 @@ translate_copilot_config() {
 # right URL are left alone, so the rebind timer doesn't rewrite the file every
 # minute. Skipped when Claude Code isn't installed.
 translate_claude_config() {
-  local servers="$1" claude_bin claude_json name url current rc=0 changed=0
+  local servers="$1" claude_bin claude_json name spec current rc=0 changed=0
   claude_bin="$(command -v claude 2>/dev/null || printf '%s' "$HOME/.local/bin/claude")"
   [[ -x "$claude_bin" ]] || return 0
   has_cmd jq || { warn "jq unavailable; skipping Claude Code config translation"; return 0; }
@@ -396,18 +467,20 @@ translate_claude_config() {
     claude_json="$HOME/.claude.json"
   fi
 
-  while IFS=$'\t' read -r name url; do
-    current="$(jq -r --arg n "$name" '.mcpServers[$n] // {} | select(.type == "http") | .url // empty' \
+  while IFS=$'\t' read -r name spec; do
+    # Compare only type, url and headers, sorted, so key order doesn't matter.
+    current="$(jq -cS --arg n "$name" \
+      '.mcpServers[$n] // {} | select(.type == "http") | {type, url, headers: (.headers // {})}' \
       "$claude_json" 2>/dev/null)"
-    [[ "$current" == "$url" ]] && continue
+    [[ "$current" == "$(jq -cS '{type: "http", url, headers: (.headers // {})}' <<< "$spec")" ]] && continue
     "$claude_bin" mcp remove -s user "$name" >/dev/null 2>&1
-    if "$claude_bin" mcp add-json -s user "$name" "{\"type\":\"http\",\"url\":\"$url\"}" >/dev/null 2>&1; then
+    if "$claude_bin" mcp add-json -s user "$name" "$(jq -c '{type: "http"} + .' <<< "$spec")" >/dev/null 2>&1; then
       changed=1
     else
       warn "failed to register the $name MCP server with Claude Code"
       rc=1
     fi
-  done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<< "$servers")
+  done < <(jq -r 'to_entries[] | "\(.key)\t\(.value | tojson)"' <<< "$servers")
   if [[ "$changed" == "1" ]]; then
     info "translated the Claude Code MCP servers in $claude_json"
   elif [[ "$rc" == "0" ]]; then
@@ -491,6 +564,7 @@ main() {
   done
 
   if [[ "$rebind" == "1" ]]; then
+    QUIET_SKIPS=1
     rebind_services "$force"
     return 0
   fi
@@ -594,6 +668,9 @@ main() {
   else
     warn "systemd user session unavailable; enable the units manually"
   fi
+
+  # 5. Tokens for remote servers that use bearer_keyring (prompts when missing).
+  ensure_mcp_tokens "$router"
 
   # Publish the endpoint URLs only after the services have had time to listen,
   # so the agents do not cache a connection-refused result during startup.
