@@ -116,20 +116,39 @@ local function get_monitor_bounds()
     if not ok or not mon then
         return nil
     end
-    return mon.x, mon.y, mon.width, mon.height
+    -- width/height are mode pixels; window geometry is in logical pixels.
+    local scale = tonumber(field(mon, "scale")) or 1
+    local width, height = mon.width / scale, mon.height / scale
+    if (tonumber(field(mon, "transform")) or 0) % 2 == 1 then
+        width, height = height, width
+    end
+    return mon.x, mon.y, width, height
+end
+
+-- Inactive group members share the group's geometry, and focusing one switches
+-- the group's tab. `visible` can't tell them apart: it's also false for every
+-- window behind a fullscreen one.
+local function is_inactive_group_member(w)
+    local group = field(w, "group")
+    if group == nil then
+        return false
+    end
+    local current = field(group, "current")
+    return current ~= nil and current.address ~= w.address
 end
 
 local function collect_candidates(windows, active_addr, active_ws, mx, my, mw, mh)
     local list = {}
     for _, w in pairs(windows) do
-        -- Inactive group members report hidden=false but visible=false, and
-        -- share the group's geometry; focusing one switches the group's tab.
-        if w.address ~= active_addr and field(w, "mapped") and field(w, "visible") and not field(w, "hidden") and not is_ghosted(w) and workspace_of(w) == active_ws then
+        if w.address ~= active_addr and field(w, "mapped") and not field(w, "hidden") and not is_inactive_group_member(w) and not is_ghosted(w) and workspace_of(w) == active_ws then
             local x, y, width, height = get_window_geometry(w)
             if x and y and width and height then
                 local center_x, center_y = x + width / 2, y + height / 2
                 if center_x >= mx and center_x < mx + mw and center_y >= my and center_y < my + mh then
-                    table.insert(list, { address = w.address, x = x, y = y, w = width, h = height })
+                    table.insert(list, {
+                        address = w.address, x = x, y = y, w = width, h = height,
+                        history = tonumber(field(w, "focus_history_id")),
+                    })
                 end
             end
         end
@@ -179,7 +198,16 @@ local function choose_target(active_win, windows, cx)
         local candidates = collect_candidates(windows, active_win.address, workspace_of(active_win), mx, my, mw, mh)
         local target = nil
 
-        if field(active_win, "floating") then
+        if fullscreen_mode(active_win) then
+            -- The other windows sit under a fullscreen or maximized window, not
+            -- beside it, so hand focus to the most recently used one.
+            for _, c in ipairs(candidates) do
+                if c.history and (target == nil or c.history < target.history) then
+                    target = c
+                end
+            end
+            target = target or candidates[1]
+        elseif field(active_win, "floating") then
             local acx, acy = ax + aw / 2, ay + ah / 2
             local best_dist = nil
             for _, c in ipairs(candidates) do
@@ -239,8 +267,8 @@ function M.toggle()
                 hl.dispatch(hl.dsp.window.tag({ tag = "-ghosted", window = addr_str }))
                 hl.dispatch(hl.dsp.window.tag({ tag = "-ghosted-fullscreen", window = addr_str }))
                 hl.dispatch(hl.dsp.window.tag({ tag = "-ghosted-maximized", window = addr_str }))
+                hl.dispatch(hl.dsp.focus({ window = addr_str }))
                 if restore_mode then
-                    hl.dispatch(hl.dsp.focus({ window = addr_str }))
                     hl.dispatch(hl.dsp.window.fullscreen({ mode = restore_mode, action = "set" }))
                 end
                 return
@@ -291,6 +319,7 @@ function M.toggle()
         else
             hl.dispatch(hl.dsp.window.set_prop({ window = addr_str, prop = "no_focus", value = "0" }))
             hl.dispatch(hl.dsp.window.tag({ tag = "-ghosted", window = addr_str }))
+            hl.dispatch(hl.dsp.focus({ window = addr_str }))
         end
     end
 end
